@@ -1,0 +1,7 @@
+.git
+.gitignore
+coverage
+data
+dist
+requirements.md
+tmp
