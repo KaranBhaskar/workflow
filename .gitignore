@@ -1,0 +1,22 @@
+# OS / editor
+.DS_Store
+
+# Local env / secrets
+.env
+.env.local
+requirements.md
+
+# Build outputs
+bin/
+dist/
+coverage/
+*.out
+*.test
+
+# Local runtime data
+tmp/
+data/
+
+# Keep verification assets tracked
+!tests/
+!tests/**
