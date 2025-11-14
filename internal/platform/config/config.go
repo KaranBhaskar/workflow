@@ -10,6 +10,7 @@ type Config struct {
 	ServiceName     string
 	AppEnv          string
 	HTTP            HTTPConfig
+	Auth            AuthConfig
 	Dependencies    DependencyConfig
 	ShutdownTimeout time.Duration
 }
@@ -54,6 +55,11 @@ func Load(defaultServiceName string) (Config, error) {
 		return Config{}, err
 	}
 
+	authConfig, err := bootstrapAuthConfig()
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		ServiceName: stringEnv("SERVICE_NAME", defaultServiceName),
 		AppEnv:      stringEnv("APP_ENV", "development"),
@@ -69,6 +75,7 @@ func Load(defaultServiceName string) (Config, error) {
 			MinIOAddr:        os.Getenv("MINIO_ADDR"),
 			ReadinessTimeout: readinessTimeout,
 		},
+		Auth:            authConfig,
 		ShutdownTimeout: shutdownTimeout,
 	}, nil
 }

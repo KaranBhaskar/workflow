@@ -9,9 +9,11 @@ import (
 	"syscall"
 
 	"workflow/internal/api"
+	"workflow/internal/auth"
 	"workflow/internal/platform/config"
 	"workflow/internal/platform/health"
 	"workflow/internal/platform/logging"
+	"workflow/internal/tenant"
 )
 
 func main() {
@@ -26,10 +28,15 @@ func main() {
 		cfg.Dependencies.ReadinessTimeout,
 		buildDependencyCheckers(cfg)...,
 	)
+	tenantService := tenant.NewService(tenant.NewMemoryRepository(buildBootstrapTenants(cfg.Auth.BootstrapAPIKeys)))
+	authService := auth.NewService(
+		auth.NewMemoryRepository(buildBootstrapAPIKeys(cfg.Auth.BootstrapAPIKeys)),
+		tenantService,
+	)
 
 	server := &http.Server{
 		Addr:         cfg.HTTP.Addr,
-		Handler:      api.NewHandler(logger, healthService),
+		Handler:      api.NewHandler(logger, healthService, authService),
 		ReadTimeout:  cfg.HTTP.ReadTimeout,
 		WriteTimeout: cfg.HTTP.WriteTimeout,
 		IdleTimeout:  cfg.HTTP.IdleTimeout,
@@ -81,4 +88,39 @@ func buildDependencyCheckers(cfg config.Config) []health.Checker {
 	}
 
 	return checkers
+}
+
+func buildBootstrapTenants(entries []config.BootstrapAPIKey) []tenant.Tenant {
+	seen := make(map[string]struct{}, len(entries))
+	tenants := make([]tenant.Tenant, 0, len(entries))
+
+	for _, entry := range entries {
+		if _, exists := seen[entry.TenantID]; exists {
+			continue
+		}
+
+		seen[entry.TenantID] = struct{}{}
+		tenants = append(tenants, tenant.Tenant{
+			ID:     entry.TenantID,
+			Name:   entry.TenantName,
+			Status: tenant.StatusActive,
+		})
+	}
+
+	return tenants
+}
+
+func buildBootstrapAPIKeys(entries []config.BootstrapAPIKey) []auth.APIKey {
+	keys := make([]auth.APIKey, 0, len(entries))
+	for _, entry := range entries {
+		keys = append(keys, auth.APIKey{
+			ID:        entry.APIKeyID,
+			TenantID:  entry.TenantID,
+			Label:     entry.Label,
+			Plaintext: entry.PlaintextKey,
+			Status:    auth.StatusActive,
+		})
+	}
+
+	return keys
 }
