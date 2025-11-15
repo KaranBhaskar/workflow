@@ -3,23 +3,17 @@ package integration_test
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
-
-	appapi "workflow/internal/api"
 	"workflow/internal/auth"
-	"workflow/internal/platform/health"
 	"workflow/internal/tenant"
 )
 
 func TestTenantEndpointRequiresAPIKey(t *testing.T) {
 	t.Parallel()
 
-	handler := newAuthenticatedHandler()
+	handler := newAuthenticatedHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/me", nil)
 	recorder := httptest.NewRecorder()
 
@@ -37,7 +31,7 @@ func TestTenantEndpointRequiresAPIKey(t *testing.T) {
 func TestTenantEndpointRejectsInvalidAPIKey(t *testing.T) {
 	t.Parallel()
 
-	handler := newAuthenticatedHandler()
+	handler := newAuthenticatedHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/me", nil)
 	req.Header.Set("X-API-Key", "not-a-real-key")
 	recorder := httptest.NewRecorder()
@@ -54,7 +48,7 @@ func TestTenantEndpointRejectsInvalidAPIKey(t *testing.T) {
 func TestTenantEndpointScopesIdentityByAPIKey(t *testing.T) {
 	t.Parallel()
 
-	handler := newAuthenticatedHandler()
+	handler := newAuthenticatedHandler(t)
 
 	t.Run("tenant a receives its own identity", func(t *testing.T) {
 		t.Parallel()
@@ -120,37 +114,10 @@ func TestTenantEndpointScopesIdentityByAPIKey(t *testing.T) {
 	})
 }
 
-func newAuthenticatedHandler() http.Handler {
-	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	healthService := health.NewService("workflow-api", time.Second)
-	tenantService := tenant.NewService(tenant.NewMemoryRepository([]tenant.Tenant{
-		{ID: "tenant-a", Name: "Tenant A", Status: tenant.StatusActive},
-		{ID: "tenant-b", Name: "Tenant B", Status: tenant.StatusActive},
-	}))
-	authService := auth.NewService(auth.NewMemoryRepository([]auth.APIKey{
-		{
-			ID:        "key-a",
-			TenantID:  "tenant-a",
-			Label:     "bootstrap",
-			Plaintext: "dev-key-tenant-a",
-			Status:    auth.StatusActive,
-		},
-		{
-			ID:        "key-b",
-			TenantID:  "tenant-b",
-			Label:     "bootstrap",
-			Plaintext: "dev-key-tenant-b",
-			Status:    auth.StatusActive,
-		},
-	}), tenantService)
-
-	return appapi.NewHandler(logger, healthService, authService)
-}
-
 func TestTenantEndpointMethodNotAllowed(t *testing.T) {
 	t.Parallel()
 
-	handler := newAuthenticatedHandler()
+	handler := newAuthenticatedHandler(t)
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/me", nil)
 	req.Header.Set("X-API-Key", "dev-key-tenant-a")
 	recorder := httptest.NewRecorder()
@@ -167,7 +134,7 @@ func TestTenantEndpointMethodNotAllowed(t *testing.T) {
 func TestTenantEndpointPreservesHealthRoutesWithoutAuth(t *testing.T) {
 	t.Parallel()
 
-	handler := newAuthenticatedHandler()
+	handler := newAuthenticatedHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/health/live", nil)
 	recorder := httptest.NewRecorder()
 

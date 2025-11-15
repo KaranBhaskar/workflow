@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -11,6 +12,7 @@ type Config struct {
 	AppEnv          string
 	HTTP            HTTPConfig
 	Auth            AuthConfig
+	Storage         StorageConfig
 	Dependencies    DependencyConfig
 	ShutdownTimeout time.Duration
 }
@@ -27,6 +29,10 @@ type DependencyConfig struct {
 	RedisAddr        string
 	MinIOAddr        string
 	ReadinessTimeout time.Duration
+}
+
+type StorageConfig struct {
+	ObjectDir string
 }
 
 func Load(defaultServiceName string) (Config, error) {
@@ -74,6 +80,9 @@ func Load(defaultServiceName string) (Config, error) {
 			RedisAddr:        os.Getenv("REDIS_ADDR"),
 			MinIOAddr:        os.Getenv("MINIO_ADDR"),
 			ReadinessTimeout: readinessTimeout,
+		},
+		Storage: StorageConfig{
+			ObjectDir: stringEnv("OBJECT_STORAGE_DIR", filepath.Join(os.TempDir(), "workflow-objects")),
 		},
 		Auth:            authConfig,
 		ShutdownTimeout: shutdownTimeout,

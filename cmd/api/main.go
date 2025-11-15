@@ -10,6 +10,7 @@ import (
 
 	"workflow/internal/api"
 	"workflow/internal/auth"
+	"workflow/internal/documents"
 	"workflow/internal/platform/config"
 	"workflow/internal/platform/health"
 	"workflow/internal/platform/logging"
@@ -33,10 +34,14 @@ func main() {
 		auth.NewMemoryRepository(buildBootstrapAPIKeys(cfg.Auth.BootstrapAPIKeys)),
 		tenantService,
 	)
+	documentService := documents.NewService(
+		documents.NewMemoryRepository(),
+		documents.NewLocalObjectStore(cfg.Storage.ObjectDir),
+	)
 
 	server := &http.Server{
 		Addr:         cfg.HTTP.Addr,
-		Handler:      api.NewHandler(logger, healthService, authService),
+		Handler:      api.NewHandler(logger, healthService, authService, documentService),
 		ReadTimeout:  cfg.HTTP.ReadTimeout,
 		WriteTimeout: cfg.HTTP.WriteTimeout,
 		IdleTimeout:  cfg.HTTP.IdleTimeout,
