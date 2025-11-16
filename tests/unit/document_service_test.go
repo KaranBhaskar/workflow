@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"workflow/internal/documents"
@@ -38,6 +39,12 @@ func TestCreateStoresDocumentMetadataAndObject(t *testing.T) {
 	if document.Checksum == "" {
 		t.Fatal("expected checksum to be populated")
 	}
+	if document.Status != documents.StatusIngested {
+		t.Fatalf("expected ingested status, got %q", document.Status)
+	}
+	if document.ChunkCount == 0 {
+		t.Fatal("expected chunks to be created for text upload")
+	}
 
 	if _, err := os.Stat(filepath.Join(tempDir, document.ObjectKey)); err != nil {
 		t.Fatalf("expected stored object to exist: %v", err)
@@ -49,6 +56,14 @@ func TestCreateStoresDocumentMetadataAndObject(t *testing.T) {
 	}
 	if fetched.Filename != "notes.txt" {
 		t.Fatalf("expected notes.txt, got %q", fetched.Filename)
+	}
+
+	chunks, err := service.ListChunks(context.Background(), "tenant-a", document.ID)
+	if err != nil {
+		t.Fatalf("list stored chunks: %v", err)
+	}
+	if len(chunks) != document.ChunkCount {
+		t.Fatalf("expected %d chunks, got %d", document.ChunkCount, len(chunks))
 	}
 }
 
@@ -90,5 +105,38 @@ func TestGetDoesNotLeakAcrossTenants(t *testing.T) {
 	_, err = service.Get(context.Background(), "tenant-b", document.ID)
 	if !errors.Is(err, documents.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for cross-tenant lookup, got %v", err)
+	}
+}
+
+func TestCreateSplitsLargeTextIntoMultipleChunks(t *testing.T) {
+	t.Parallel()
+
+	service := documents.NewService(
+		documents.NewMemoryRepository(),
+		documents.NewLocalObjectStore(t.TempDir()),
+	)
+
+	document, err := service.Create(context.Background(), "tenant-a", documents.CreateParams{
+		Filename:    "long.txt",
+		ContentType: "text/plain",
+		Content:     bytes.NewBufferString(strings.Repeat("chunk words ", 120)),
+	})
+	if err != nil {
+		t.Fatalf("create document: %v", err)
+	}
+
+	chunks, err := service.ListChunks(context.Background(), "tenant-a", document.ID)
+	if err != nil {
+		t.Fatalf("list chunks: %v", err)
+	}
+
+	if len(chunks) < 2 {
+		t.Fatalf("expected at least 2 chunks, got %d", len(chunks))
+	}
+	if chunks[0].ChunkIndex != 0 {
+		t.Fatalf("expected first chunk index 0, got %d", chunks[0].ChunkIndex)
+	}
+	if chunks[0].TokenEstimate == 0 {
+		t.Fatal("expected token estimate to be populated")
 	}
 }

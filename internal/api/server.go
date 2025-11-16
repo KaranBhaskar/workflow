@@ -164,10 +164,33 @@ func NewHandler(logger *slog.Logger, healthService *health.Service, authenticato
 			return
 		}
 
-		documentID := strings.TrimPrefix(r.URL.Path, "/v1/documents/")
-		if strings.TrimSpace(documentID) == "" || strings.Contains(documentID, "/") {
+		documentID, wantsChunks := documentPath(r.URL.Path)
+		if strings.TrimSpace(documentID) == "" {
 			writeJSON(w, http.StatusNotFound, map[string]string{
 				"error": "document not found",
+			})
+			return
+		}
+
+		if wantsChunks {
+			chunks, err := documentService.ListChunks(r.Context(), identity.TenantID, documentID)
+			if err != nil {
+				statusCode := http.StatusInternalServerError
+				message := "failed to fetch document chunks"
+
+				if errors.Is(err, documents.ErrNotFound) {
+					statusCode = http.StatusNotFound
+					message = "document not found"
+				}
+
+				writeJSON(w, statusCode, map[string]string{
+					"error": message,
+				})
+				return
+			}
+
+			writeJSON(w, http.StatusOK, map[string]any{
+				"chunks": chunkResponses(chunks),
 			})
 			return
 		}
@@ -243,7 +266,44 @@ func documentResponse(document documents.Document) map[string]any {
 		"object_key":   document.ObjectKey,
 		"status":       string(document.Status),
 		"created_at":   document.CreatedAt,
+		"ingested_at":  document.IngestedAt,
+		"chunk_count":  document.ChunkCount,
 	}
+}
+
+func chunkResponses(chunks []documents.Chunk) []map[string]any {
+	response := make([]map[string]any, 0, len(chunks))
+	for _, chunk := range chunks {
+		response = append(response, map[string]any{
+			"id":             chunk.ID,
+			"document_id":    chunk.DocumentID,
+			"tenant_id":      chunk.TenantID,
+			"chunk_index":    chunk.ChunkIndex,
+			"content":        chunk.Content,
+			"token_estimate": chunk.TokenEstimate,
+			"created_at":     chunk.CreatedAt,
+		})
+	}
+
+	return response
+}
+
+func documentPath(requestPath string) (documentID string, wantsChunks bool) {
+	documentID = strings.TrimPrefix(requestPath, "/v1/documents/")
+	if documentID == "" {
+		return "", false
+	}
+
+	if strings.HasSuffix(documentID, "/chunks") {
+		documentID = strings.TrimSuffix(documentID, "/chunks")
+		wantsChunks = true
+	}
+
+	if strings.TrimSpace(documentID) == "" || strings.Contains(documentID, "/") {
+		return "", false
+	}
+
+	return documentID, wantsChunks
 }
 
 func snifffedContent(file io.Reader) (io.Reader, string, error) {
