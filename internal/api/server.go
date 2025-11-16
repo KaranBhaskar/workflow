@@ -25,44 +25,31 @@ func (sr *statusRecorder) WriteHeader(statusCode int) {
 	sr.ResponseWriter.WriteHeader(statusCode)
 }
 
+type server struct {
+	healthService   *health.Service
+	documentService *documents.Service
+}
+
+type documentEnvelope struct {
+	Document documents.Document `json:"document"`
+}
+
+type chunksEnvelope struct {
+	Chunks []documents.Chunk `json:"chunks"`
+}
+
 func NewHandler(logger *slog.Logger, healthService *health.Service, authenticator *auth.Service, documentService *documents.Service) http.Handler {
+	srv := server{
+		healthService:   healthService,
+		documentService: documentService,
+	}
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/health/live", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
-
-		writeJSON(w, http.StatusOK, healthService.LiveReport())
-	})
-
-	mux.HandleFunc("/health/ready", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
-
-		report, ready := healthService.ReadyReport(r.Context())
-		statusCode := http.StatusOK
-		if !ready {
-			statusCode = http.StatusServiceUnavailable
-		}
-
-		writeJSON(w, statusCode, report)
-	})
-
-	mux.Handle("/v1/tenants/me", requireAPIKey(authenticator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
-
-		identity, ok := auth.IdentityFromContext(r.Context())
+	mux.Handle("GET /health/live", http.HandlerFunc(srv.handleLive))
+	mux.Handle("GET /health/ready", http.HandlerFunc(srv.handleReady))
+	mux.Handle("GET /v1/tenants/me", requireAPIKey(authenticator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := currentIdentity(w, r)
 		if !ok {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "request identity missing from context",
-			})
 			return
 		}
 
@@ -78,145 +65,87 @@ func NewHandler(logger *slog.Logger, healthService *health.Service, authenticato
 			},
 		})
 	})))
-
-	mux.Handle("/v1/documents", requireAPIKey(authenticator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
-
-		if documentService == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"error": "document service is not configured",
-			})
-			return
-		}
-
-		identity, ok := auth.IdentityFromContext(r.Context())
-		if !ok {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "request identity missing from context",
-			})
-			return
-		}
-
-		file, header, err := r.FormFile("file")
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": "missing multipart file field",
-			})
-			return
-		}
-		defer file.Close()
-
-		contentReader, contentType, err := snifffedContent(file)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": "failed to read uploaded file",
-			})
-			return
-		}
-
-		document, err := documentService.Create(r.Context(), identity.TenantID, documents.CreateParams{
-			Filename:    header.Filename,
-			ContentType: contentType,
-			Content:     contentReader,
-		})
-		if err != nil {
-			statusCode := http.StatusInternalServerError
-			message := "failed to upload document"
-
-			switch {
-			case errors.Is(err, documents.ErrInvalidFilename), errors.Is(err, documents.ErrMissingContent), errors.Is(err, documents.ErrUnsupportedContentType):
-				statusCode = http.StatusBadRequest
-				message = err.Error()
-			}
-
-			writeJSON(w, statusCode, map[string]string{
-				"error": message,
-			})
-			return
-		}
-
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"document": documentResponse(document),
-		})
-	})))
-
-	mux.Handle("/v1/documents/", requireAPIKey(authenticator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
-
-		if documentService == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"error": "document service is not configured",
-			})
-			return
-		}
-
-		identity, ok := auth.IdentityFromContext(r.Context())
-		if !ok {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "request identity missing from context",
-			})
-			return
-		}
-
-		documentID, wantsChunks := documentPath(r.URL.Path)
-		if strings.TrimSpace(documentID) == "" {
-			writeJSON(w, http.StatusNotFound, map[string]string{
-				"error": "document not found",
-			})
-			return
-		}
-
-		if wantsChunks {
-			chunks, err := documentService.ListChunks(r.Context(), identity.TenantID, documentID)
-			if err != nil {
-				statusCode := http.StatusInternalServerError
-				message := "failed to fetch document chunks"
-
-				if errors.Is(err, documents.ErrNotFound) {
-					statusCode = http.StatusNotFound
-					message = "document not found"
-				}
-
-				writeJSON(w, statusCode, map[string]string{
-					"error": message,
-				})
-				return
-			}
-
-			writeJSON(w, http.StatusOK, map[string]any{
-				"chunks": chunkResponses(chunks),
-			})
-			return
-		}
-
-		document, err := documentService.Get(r.Context(), identity.TenantID, documentID)
-		if err != nil {
-			statusCode := http.StatusInternalServerError
-			message := "failed to fetch document"
-
-			if errors.Is(err, documents.ErrNotFound) {
-				statusCode = http.StatusNotFound
-				message = "document not found"
-			}
-
-			writeJSON(w, statusCode, map[string]string{
-				"error": message,
-			})
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"document": documentResponse(document),
-		})
-	})))
+	mux.Handle("POST /v1/documents", requireAPIKey(authenticator, http.HandlerFunc(srv.handleUploadDocument)))
+	mux.Handle("GET /v1/documents/{documentID}", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetDocument)))
+	mux.Handle("GET /v1/documents/{documentID}/chunks", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetDocumentChunks)))
 
 	return requestLogger(logger, mux)
+}
+
+func (s server) handleLive(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.healthService.LiveReport())
+}
+
+func (s server) handleReady(w http.ResponseWriter, r *http.Request) {
+	report, ready := s.healthService.ReadyReport(r.Context())
+	statusCode := http.StatusOK
+	if !ready {
+		statusCode = http.StatusServiceUnavailable
+	}
+
+	writeJSON(w, statusCode, report)
+}
+
+func (s server) handleUploadDocument(w http.ResponseWriter, r *http.Request) {
+	identity, documentService, ok := s.documentContext(w, r)
+	if !ok {
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing multipart file field")
+		return
+	}
+	defer file.Close()
+
+	contentReader, contentType, err := sniffedContent(file)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read uploaded file")
+		return
+	}
+
+	document, err := documentService.Create(r.Context(), identity.TenantID, documents.CreateParams{
+		Filename:    header.Filename,
+		ContentType: contentType,
+		Content:     contentReader,
+	})
+	if err != nil {
+		writeDocumentError(w, err, "failed to upload document")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, documentEnvelope{Document: document})
+}
+
+func (s server) handleGetDocument(w http.ResponseWriter, r *http.Request) {
+	identity, documentService, ok := s.documentContext(w, r)
+	if !ok {
+		return
+	}
+
+	document, err := documentService.Get(r.Context(), identity.TenantID, r.PathValue("documentID"))
+	if err != nil {
+		writeDocumentError(w, err, "failed to fetch document")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, documentEnvelope{Document: document})
+}
+
+func (s server) handleGetDocumentChunks(w http.ResponseWriter, r *http.Request) {
+	identity, documentService, ok := s.documentContext(w, r)
+	if !ok {
+		return
+	}
+
+	chunks, err := documentService.ListChunks(r.Context(), identity.TenantID, r.PathValue("documentID"))
+	if err != nil {
+		writeDocumentError(w, err, "failed to fetch document chunks")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, chunksEnvelope{Chunks: chunks})
 }
 
 func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
@@ -240,12 +169,6 @@ func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
 	})
 }
 
-func methodNotAllowed(w http.ResponseWriter) {
-	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-		"error": "method not allowed",
-	})
-}
-
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
@@ -255,58 +178,53 @@ func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 	}
 }
 
-func documentResponse(document documents.Document) map[string]any {
-	return map[string]any{
-		"id":           document.ID,
-		"tenant_id":    document.TenantID,
-		"filename":     document.Filename,
-		"content_type": document.ContentType,
-		"size_bytes":   document.SizeBytes,
-		"checksum":     document.Checksum,
-		"object_key":   document.ObjectKey,
-		"status":       string(document.Status),
-		"created_at":   document.CreatedAt,
-		"ingested_at":  document.IngestedAt,
-		"chunk_count":  document.ChunkCount,
-	}
+func writeError(w http.ResponseWriter, statusCode int, message string) {
+	writeJSON(w, statusCode, map[string]string{
+		"error": message,
+	})
 }
 
-func chunkResponses(chunks []documents.Chunk) []map[string]any {
-	response := make([]map[string]any, 0, len(chunks))
-	for _, chunk := range chunks {
-		response = append(response, map[string]any{
-			"id":             chunk.ID,
-			"document_id":    chunk.DocumentID,
-			"tenant_id":      chunk.TenantID,
-			"chunk_index":    chunk.ChunkIndex,
-			"content":        chunk.Content,
-			"token_estimate": chunk.TokenEstimate,
-			"created_at":     chunk.CreatedAt,
-		})
+func currentIdentity(w http.ResponseWriter, r *http.Request) (auth.Identity, bool) {
+	identity, ok := auth.IdentityFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "request identity missing from context")
+		return auth.Identity{}, false
 	}
 
-	return response
+	return identity, true
 }
 
-func documentPath(requestPath string) (documentID string, wantsChunks bool) {
-	documentID = strings.TrimPrefix(requestPath, "/v1/documents/")
-	if documentID == "" {
-		return "", false
+func (s server) documentContext(w http.ResponseWriter, r *http.Request) (auth.Identity, *documents.Service, bool) {
+	if s.documentService == nil {
+		writeError(w, http.StatusServiceUnavailable, "document service is not configured")
+		return auth.Identity{}, nil, false
 	}
 
-	if strings.HasSuffix(documentID, "/chunks") {
-		documentID = strings.TrimSuffix(documentID, "/chunks")
-		wantsChunks = true
+	identity, ok := currentIdentity(w, r)
+	if !ok {
+		return auth.Identity{}, nil, false
 	}
 
-	if strings.TrimSpace(documentID) == "" || strings.Contains(documentID, "/") {
-		return "", false
-	}
-
-	return documentID, wantsChunks
+	return identity, s.documentService, true
 }
 
-func snifffedContent(file io.Reader) (io.Reader, string, error) {
+func writeDocumentError(w http.ResponseWriter, err error, fallback string) {
+	statusCode := http.StatusInternalServerError
+	message := fallback
+
+	switch {
+	case errors.Is(err, documents.ErrInvalidFilename), errors.Is(err, documents.ErrMissingContent), errors.Is(err, documents.ErrUnsupportedContentType):
+		statusCode = http.StatusBadRequest
+		message = err.Error()
+	case errors.Is(err, documents.ErrNotFound):
+		statusCode = http.StatusNotFound
+		message = "document not found"
+	}
+
+	writeError(w, statusCode, message)
+}
+
+func sniffedContent(file io.Reader) (io.Reader, string, error) {
 	head := make([]byte, 512)
 	readBytes, err := file.Read(head)
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -320,9 +238,7 @@ func snifffedContent(file io.Reader) (io.Reader, string, error) {
 func requireAPIKey(authenticator *auth.Service, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if authenticator == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"error": "authentication is not configured",
-			})
+			writeError(w, http.StatusServiceUnavailable, "authentication is not configured")
 			return
 		}
 
@@ -339,9 +255,7 @@ func requireAPIKey(authenticator *auth.Service, next http.Handler) http.Handler 
 				message = "inactive credential"
 			}
 
-			writeJSON(w, statusCode, map[string]string{
-				"error": message,
-			})
+			writeError(w, statusCode, message)
 			return
 		}
 

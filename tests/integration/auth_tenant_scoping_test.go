@@ -1,13 +1,10 @@
 package integration_test
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"workflow/internal/auth"
-	"workflow/internal/tenant"
 )
 
 func TestTenantEndpointRequiresAPIKey(t *testing.T) {
@@ -144,29 +141,5 @@ func TestTenantEndpointPreservesHealthRoutesWithoutAuth(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-}
-
-func TestAuthServiceIgnoresUnusedContextCancellationForValidLookup(t *testing.T) {
-	t.Parallel()
-
-	tenantService := tenant.NewService(tenant.NewMemoryRepository([]tenant.Tenant{
-		{ID: "tenant-a", Name: "Tenant A", Status: tenant.StatusActive},
-	}))
-	service := auth.NewService(auth.NewMemoryRepository([]auth.APIKey{
-		{
-			ID:        "key-a",
-			TenantID:  "tenant-a",
-			Label:     "bootstrap",
-			Plaintext: "dev-key-tenant-a",
-			Status:    auth.StatusActive,
-		},
-	}), tenantService)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	if _, err := service.Authenticate(ctx, "dev-key-tenant-a"); err != nil {
-		t.Fatalf("expected cached lookup to succeed despite canceled context, got %v", err)
 	}
 }

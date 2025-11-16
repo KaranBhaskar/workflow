@@ -95,6 +95,18 @@ func TestAuthenticateRejectsInactiveTenant(t *testing.T) {
 	}
 }
 
+func TestAuthenticateAllowsCachedLookupWithCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	service := newAuthServiceForTests()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := service.Authenticate(ctx, "tenant-a-key"); err != nil {
+		t.Fatalf("expected cached lookup to succeed despite canceled context, got %v", err)
+	}
+}
+
 func newAuthServiceForTests() *auth.Service {
 	tenantService := tenant.NewService(tenant.NewMemoryRepository([]tenant.Tenant{
 		{ID: "tenant-a", Name: "Tenant A", Status: tenant.StatusActive},
