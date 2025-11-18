@@ -13,6 +13,7 @@ import (
 	"workflow/internal/auth"
 	"workflow/internal/documents"
 	"workflow/internal/platform/health"
+	"workflow/internal/workflow"
 )
 
 type statusRecorder struct {
@@ -28,6 +29,7 @@ func (sr *statusRecorder) WriteHeader(statusCode int) {
 type server struct {
 	healthService   *health.Service
 	documentService *documents.Service
+	workflowService *workflow.Service
 }
 
 type documentEnvelope struct {
@@ -38,10 +40,19 @@ type chunksEnvelope struct {
 	Chunks []documents.Chunk `json:"chunks"`
 }
 
-func NewHandler(logger *slog.Logger, healthService *health.Service, authenticator *auth.Service, documentService *documents.Service) http.Handler {
+type workflowEnvelope struct {
+	Workflow workflow.Workflow `json:"workflow"`
+}
+
+type validationEnvelope struct {
+	Validation workflow.ValidationResult `json:"validation"`
+}
+
+func NewHandler(logger *slog.Logger, healthService *health.Service, authenticator *auth.Service, documentService *documents.Service, workflowService *workflow.Service) http.Handler {
 	srv := server{
 		healthService:   healthService,
 		documentService: documentService,
+		workflowService: workflowService,
 	}
 	mux := http.NewServeMux()
 
@@ -68,6 +79,9 @@ func NewHandler(logger *slog.Logger, healthService *health.Service, authenticato
 	mux.Handle("POST /v1/documents", requireAPIKey(authenticator, http.HandlerFunc(srv.handleUploadDocument)))
 	mux.Handle("GET /v1/documents/{documentID}", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetDocument)))
 	mux.Handle("GET /v1/documents/{documentID}/chunks", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetDocumentChunks)))
+	mux.Handle("POST /v1/workflows", requireAPIKey(authenticator, http.HandlerFunc(srv.handleCreateWorkflow)))
+	mux.Handle("GET /v1/workflows/{workflowID}", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetWorkflow)))
+	mux.Handle("POST /v1/workflows/{workflowID}/validate", requireAPIKey(authenticator, http.HandlerFunc(srv.handleValidateWorkflow)))
 
 	return requestLogger(logger, mux)
 }
@@ -148,6 +162,62 @@ func (s server) handleGetDocumentChunks(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, chunksEnvelope{Chunks: chunks})
 }
 
+func (s server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
+	identity, workflowService, ok := s.workflowContext(w, r)
+	if !ok {
+		return
+	}
+
+	var definition workflow.Definition
+	if err := json.NewDecoder(r.Body).Decode(&definition); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workflow definition payload")
+		return
+	}
+
+	createdWorkflow, validation, err := workflowService.Create(r.Context(), identity.TenantID, definition)
+	if err != nil {
+		if errors.Is(err, workflow.ErrInvalidDefinition) {
+			writeJSON(w, http.StatusBadRequest, validationEnvelope{Validation: validation})
+			return
+		}
+
+		writeWorkflowError(w, err, "failed to create workflow")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, workflowEnvelope{Workflow: createdWorkflow})
+}
+
+func (s server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
+	identity, workflowService, ok := s.workflowContext(w, r)
+	if !ok {
+		return
+	}
+
+	resolvedWorkflow, err := workflowService.Get(r.Context(), identity.TenantID, r.PathValue("workflowID"))
+	if err != nil {
+		writeWorkflowError(w, err, "failed to fetch workflow")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, workflowEnvelope{Workflow: resolvedWorkflow})
+}
+
+func (s server) handleValidateWorkflow(w http.ResponseWriter, r *http.Request) {
+	identity, workflowService, ok := s.workflowContext(w, r)
+	if !ok {
+		return
+	}
+
+	validation, err := workflowService.Validate(r.Context(), identity.TenantID, r.PathValue("workflowID"))
+	if err != nil {
+		writeWorkflowError(w, err, "failed to validate workflow")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, validationEnvelope{Validation: validation})
+}
+
 func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -208,6 +278,20 @@ func (s server) documentContext(w http.ResponseWriter, r *http.Request) (auth.Id
 	return identity, s.documentService, true
 }
 
+func (s server) workflowContext(w http.ResponseWriter, r *http.Request) (auth.Identity, *workflow.Service, bool) {
+	if s.workflowService == nil {
+		writeError(w, http.StatusServiceUnavailable, "workflow service is not configured")
+		return auth.Identity{}, nil, false
+	}
+
+	identity, ok := currentIdentity(w, r)
+	if !ok {
+		return auth.Identity{}, nil, false
+	}
+
+	return identity, s.workflowService, true
+}
+
 func writeDocumentError(w http.ResponseWriter, err error, fallback string) {
 	statusCode := http.StatusInternalServerError
 	message := fallback
@@ -219,6 +303,22 @@ func writeDocumentError(w http.ResponseWriter, err error, fallback string) {
 	case errors.Is(err, documents.ErrNotFound):
 		statusCode = http.StatusNotFound
 		message = "document not found"
+	}
+
+	writeError(w, statusCode, message)
+}
+
+func writeWorkflowError(w http.ResponseWriter, err error, fallback string) {
+	statusCode := http.StatusInternalServerError
+	message := fallback
+
+	switch {
+	case errors.Is(err, workflow.ErrNotFound):
+		statusCode = http.StatusNotFound
+		message = "workflow not found"
+	case errors.Is(err, workflow.ErrInvalidTenant), errors.Is(err, workflow.ErrInvalidDefinition):
+		statusCode = http.StatusBadRequest
+		message = err.Error()
 	}
 
 	writeError(w, statusCode, message)

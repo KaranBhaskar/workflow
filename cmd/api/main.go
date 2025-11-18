@@ -15,6 +15,7 @@ import (
 	"workflow/internal/platform/health"
 	"workflow/internal/platform/logging"
 	"workflow/internal/tenant"
+	"workflow/internal/workflow"
 )
 
 func main() {
@@ -38,10 +39,11 @@ func main() {
 		documents.NewMemoryRepository(),
 		documents.NewLocalObjectStore(cfg.Storage.ObjectDir),
 	)
+	workflowService := workflow.NewService(workflow.NewMemoryRepository())
 
 	server := &http.Server{
 		Addr:         cfg.HTTP.Addr,
-		Handler:      api.NewHandler(logger, healthService, authService, documentService),
+		Handler:      api.NewHandler(logger, healthService, authService, documentService, workflowService),
 		ReadTimeout:  cfg.HTTP.ReadTimeout,
 		WriteTimeout: cfg.HTTP.WriteTimeout,
 		IdleTimeout:  cfg.HTTP.IdleTimeout,

@@ -12,6 +12,7 @@ import (
 	"workflow/internal/documents"
 	"workflow/internal/platform/health"
 	"workflow/internal/tenant"
+	"workflow/internal/workflow"
 )
 
 func newAuthenticatedHandler(t *testing.T) http.Handler {
@@ -43,6 +44,7 @@ func newAuthenticatedHandler(t *testing.T) http.Handler {
 		documents.NewMemoryRepository(),
 		documents.NewLocalObjectStore(t.TempDir()),
 	)
+	workflowService := workflow.NewService(workflow.NewMemoryRepository())
 
-	return appapi.NewHandler(logger, healthService, authService, documentService)
+	return appapi.NewHandler(logger, healthService, authService, documentService, workflowService)
 }
