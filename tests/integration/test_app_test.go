@@ -10,6 +10,7 @@ import (
 	appapi "workflow/internal/api"
 	"workflow/internal/auth"
 	"workflow/internal/documents"
+	"workflow/internal/executor"
 	"workflow/internal/platform/health"
 	"workflow/internal/tenant"
 	"workflow/internal/workflow"
@@ -45,6 +46,12 @@ func newAuthenticatedHandler(t *testing.T) http.Handler {
 		documents.NewLocalObjectStore(t.TempDir()),
 	)
 	workflowService := workflow.NewService(workflow.NewMemoryRepository())
+	executorService := executor.NewService(
+		executor.NewMemoryRepository(),
+		workflowService,
+		documentService,
+		executor.NewMockLLMProvider(),
+	)
 
-	return appapi.NewHandler(logger, healthService, authService, documentService, workflowService)
+	return appapi.NewHandler(logger, healthService, authService, documentService, workflowService, executorService)
 }

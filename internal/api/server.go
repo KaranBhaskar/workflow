@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,6 +13,7 @@ import (
 
 	"workflow/internal/auth"
 	"workflow/internal/documents"
+	"workflow/internal/executor"
 	"workflow/internal/platform/health"
 	"workflow/internal/workflow"
 )
@@ -30,6 +32,7 @@ type server struct {
 	healthService   *health.Service
 	documentService *documents.Service
 	workflowService *workflow.Service
+	executorService *executor.Service
 }
 
 type documentEnvelope struct {
@@ -48,11 +51,20 @@ type validationEnvelope struct {
 	Validation workflow.ValidationResult `json:"validation"`
 }
 
-func NewHandler(logger *slog.Logger, healthService *health.Service, authenticator *auth.Service, documentService *documents.Service, workflowService *workflow.Service) http.Handler {
+type runEnvelope struct {
+	Run executor.Run `json:"run"`
+}
+
+type stepsEnvelope struct {
+	Steps []executor.Step `json:"steps"`
+}
+
+func NewHandler(logger *slog.Logger, healthService *health.Service, authenticator *auth.Service, documentService *documents.Service, workflowService *workflow.Service, executorService *executor.Service) http.Handler {
 	srv := server{
 		healthService:   healthService,
 		documentService: documentService,
 		workflowService: workflowService,
+		executorService: executorService,
 	}
 	mux := http.NewServeMux()
 
@@ -82,6 +94,9 @@ func NewHandler(logger *slog.Logger, healthService *health.Service, authenticato
 	mux.Handle("POST /v1/workflows", requireAPIKey(authenticator, http.HandlerFunc(srv.handleCreateWorkflow)))
 	mux.Handle("GET /v1/workflows/{workflowID}", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetWorkflow)))
 	mux.Handle("POST /v1/workflows/{workflowID}/validate", requireAPIKey(authenticator, http.HandlerFunc(srv.handleValidateWorkflow)))
+	mux.Handle("POST /v1/workflows/{workflowID}/execute", requireAPIKey(authenticator, http.HandlerFunc(srv.handleExecuteWorkflow)))
+	mux.Handle("GET /v1/workflow-runs/{runID}", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetRun)))
+	mux.Handle("GET /v1/workflow-runs/{runID}/steps", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetRunSteps)))
 
 	return requestLogger(logger, mux)
 }
@@ -101,7 +116,7 @@ func (s server) handleReady(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s server) handleUploadDocument(w http.ResponseWriter, r *http.Request) {
-	identity, documentService, ok := s.documentContext(w, r)
+	identity, documentService, ok := serviceContext(w, r, s.documentService, "document")
 	if !ok {
 		return
 	}
@@ -133,7 +148,7 @@ func (s server) handleUploadDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s server) handleGetDocument(w http.ResponseWriter, r *http.Request) {
-	identity, documentService, ok := s.documentContext(w, r)
+	identity, documentService, ok := serviceContext(w, r, s.documentService, "document")
 	if !ok {
 		return
 	}
@@ -148,7 +163,7 @@ func (s server) handleGetDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s server) handleGetDocumentChunks(w http.ResponseWriter, r *http.Request) {
-	identity, documentService, ok := s.documentContext(w, r)
+	identity, documentService, ok := serviceContext(w, r, s.documentService, "document")
 	if !ok {
 		return
 	}
@@ -163,7 +178,7 @@ func (s server) handleGetDocumentChunks(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
-	identity, workflowService, ok := s.workflowContext(w, r)
+	identity, workflowService, ok := serviceContext(w, r, s.workflowService, "workflow")
 	if !ok {
 		return
 	}
@@ -189,7 +204,7 @@ func (s server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
-	identity, workflowService, ok := s.workflowContext(w, r)
+	identity, workflowService, ok := serviceContext(w, r, s.workflowService, "workflow")
 	if !ok {
 		return
 	}
@@ -204,7 +219,7 @@ func (s server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s server) handleValidateWorkflow(w http.ResponseWriter, r *http.Request) {
-	identity, workflowService, ok := s.workflowContext(w, r)
+	identity, workflowService, ok := serviceContext(w, r, s.workflowService, "workflow")
 	if !ok {
 		return
 	}
@@ -216,6 +231,79 @@ func (s server) handleValidateWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, validationEnvelope{Validation: validation})
+}
+
+func (s server) handleExecuteWorkflow(w http.ResponseWriter, r *http.Request) {
+	identity, executorService, ok := serviceContext(w, r, s.executorService, "executor")
+	if !ok {
+		return
+	}
+
+	var request struct {
+		Mode    string         `json:"mode"`
+		Input   map[string]any `json:"input"`
+		Options struct {
+			TimeoutMS int `json:"timeout_ms"`
+		} `json:"options"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid workflow execution payload")
+		return
+	}
+
+	mode := strings.TrimSpace(request.Mode)
+	if mode == "" {
+		mode = "sync"
+	}
+	if mode != "sync" {
+		writeError(w, http.StatusBadRequest, "only sync execution is supported in this version")
+		return
+	}
+
+	ctx := r.Context()
+	if request.Options.TimeoutMS > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(request.Options.TimeoutMS)*time.Millisecond)
+		defer cancel()
+	}
+
+	run, err := executorService.ExecuteSync(ctx, identity.TenantID, r.PathValue("workflowID"), request.Input)
+	if err != nil {
+		writeExecutionError(w, err, "failed to execute workflow")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, runEnvelope{Run: run})
+}
+
+func (s server) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	identity, executorService, ok := serviceContext(w, r, s.executorService, "executor")
+	if !ok {
+		return
+	}
+
+	run, err := executorService.GetRun(r.Context(), identity.TenantID, r.PathValue("runID"))
+	if err != nil {
+		writeExecutionError(w, err, "failed to fetch workflow run")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, runEnvelope{Run: run})
+}
+
+func (s server) handleGetRunSteps(w http.ResponseWriter, r *http.Request) {
+	identity, executorService, ok := serviceContext(w, r, s.executorService, "executor")
+	if !ok {
+		return
+	}
+
+	steps, err := executorService.ListSteps(r.Context(), identity.TenantID, r.PathValue("runID"))
+	if err != nil {
+		writeExecutionError(w, err, "failed to fetch workflow steps")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, stepsEnvelope{Steps: steps})
 }
 
 func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
@@ -264,9 +352,9 @@ func currentIdentity(w http.ResponseWriter, r *http.Request) (auth.Identity, boo
 	return identity, true
 }
 
-func (s server) documentContext(w http.ResponseWriter, r *http.Request) (auth.Identity, *documents.Service, bool) {
-	if s.documentService == nil {
-		writeError(w, http.StatusServiceUnavailable, "document service is not configured")
+func serviceContext[T any](w http.ResponseWriter, r *http.Request, service *T, name string) (auth.Identity, *T, bool) {
+	if service == nil {
+		writeError(w, http.StatusServiceUnavailable, name+" service is not configured")
 		return auth.Identity{}, nil, false
 	}
 
@@ -275,21 +363,7 @@ func (s server) documentContext(w http.ResponseWriter, r *http.Request) (auth.Id
 		return auth.Identity{}, nil, false
 	}
 
-	return identity, s.documentService, true
-}
-
-func (s server) workflowContext(w http.ResponseWriter, r *http.Request) (auth.Identity, *workflow.Service, bool) {
-	if s.workflowService == nil {
-		writeError(w, http.StatusServiceUnavailable, "workflow service is not configured")
-		return auth.Identity{}, nil, false
-	}
-
-	identity, ok := currentIdentity(w, r)
-	if !ok {
-		return auth.Identity{}, nil, false
-	}
-
-	return identity, s.workflowService, true
+	return identity, service, true
 }
 
 func writeDocumentError(w http.ResponseWriter, err error, fallback string) {
@@ -317,6 +391,25 @@ func writeWorkflowError(w http.ResponseWriter, err error, fallback string) {
 		statusCode = http.StatusNotFound
 		message = "workflow not found"
 	case errors.Is(err, workflow.ErrInvalidTenant), errors.Is(err, workflow.ErrInvalidDefinition):
+		statusCode = http.StatusBadRequest
+		message = err.Error()
+	}
+
+	writeError(w, statusCode, message)
+}
+
+func writeExecutionError(w http.ResponseWriter, err error, fallback string) {
+	statusCode := http.StatusInternalServerError
+	message := fallback
+
+	switch {
+	case errors.Is(err, workflow.ErrNotFound):
+		statusCode = http.StatusNotFound
+		message = "workflow not found"
+	case errors.Is(err, executor.ErrNotFound):
+		statusCode = http.StatusNotFound
+		message = "workflow run not found"
+	case errors.Is(err, executor.ErrInvalidTenant):
 		statusCode = http.StatusBadRequest
 		message = err.Error()
 	}

@@ -2,13 +2,13 @@ package workflow
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
+
+	"workflow/internal/platform/ids"
 )
 
 var (
@@ -100,7 +100,7 @@ func NewService(repository Repository) *Service {
 	return &Service{
 		repository: repository,
 		now:        func() time.Time { return time.Now().UTC() },
-		newID:      newWorkflowID,
+		newID:      ids.New,
 	}
 }
 
@@ -257,13 +257,4 @@ func supportedNodeType(nodeType string) bool {
 	default:
 		return false
 	}
-}
-
-func newWorkflowID() (string, error) {
-	bytes := make([]byte, 12)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-
-	return hex.EncodeToString(bytes), nil
 }

@@ -3,8 +3,6 @@ package documents
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"workflow/internal/platform/ids"
 )
 
 var (
@@ -102,7 +102,7 @@ func NewService(repository Repository, objectStore ObjectStore) *Service {
 		repository:  repository,
 		objectStore: objectStore,
 		now:         func() time.Time { return time.Now().UTC() },
-		newID:       newDocumentID,
+		newID:       ids.New,
 	}
 }
 
@@ -218,15 +218,6 @@ func (s *Service) ListChunks(ctx context.Context, tenantID, documentID string) (
 	}
 
 	return s.repository.ListChunks(ctx, tenantID, documentID)
-}
-
-func newDocumentID() (string, error) {
-	bytes := make([]byte, 12)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-
-	return hex.EncodeToString(bytes), nil
 }
 
 func normalizeContentType(contentType string) string {
