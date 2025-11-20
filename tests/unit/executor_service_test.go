@@ -108,3 +108,53 @@ func TestExecuteSyncMarksUnsupportedNodesFailed(t *testing.T) {
 		t.Fatal("expected run error to be recorded")
 	}
 }
+
+func TestExecuteSyncRoutesConditionBranches(t *testing.T) {
+	t.Parallel()
+
+	documentService := documents.NewService(
+		documents.NewMemoryRepository(),
+		documents.NewLocalObjectStore(t.TempDir()),
+	)
+	workflowService := workflow.NewService(workflow.NewMemoryRepository())
+	createdWorkflow, _, err := workflowService.Create(context.Background(), "tenant-a", workflow.Definition{
+		Name:    "route-flow",
+		Version: 1,
+		Nodes: []workflow.Node{
+			{ID: "route", Type: "condition", Config: map[string]any{"input_key": "severity", "operator": "equals", "equals": "high"}},
+			{ID: "high", Type: "audit_log", Config: map[string]any{"message": "high-path"}},
+			{ID: "low", Type: "audit_log", Config: map[string]any{"message": "low-path"}},
+		},
+		Edges: []workflow.Edge{
+			{From: "route", To: "high", Condition: "true"},
+			{From: "route", To: "low", Condition: "false"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+
+	executorService := executor.NewService(
+		executor.NewMemoryRepository(),
+		workflowService,
+		documentService,
+		executor.NewMockLLMProvider(),
+	)
+
+	run, err := executorService.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"severity": "high"})
+	if err != nil {
+		t.Fatalf("execute workflow: %v", err)
+	}
+
+	steps, err := executorService.ListSteps(context.Background(), "tenant-a", run.ID)
+	if err != nil {
+		t.Fatalf("list steps: %v", err)
+	}
+
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 executed steps, got %d", len(steps))
+	}
+	if steps[1].NodeID != "high" {
+		t.Fatalf("expected high branch to execute, got %q", steps[1].NodeID)
+	}
+}

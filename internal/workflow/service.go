@@ -239,9 +239,38 @@ func ValidateDefinition(definition Definition) ValidationResult {
 		if node.Type == "condition" && outgoing[nodeID] < 2 {
 			errorsList = append(errorsList, ValidationError{Field: "edges", Message: "condition nodes must have at least two outgoing edges"})
 		}
+		if incoming[nodeID] > 1 {
+			errorsList = append(errorsList, ValidationError{Field: "edges", Message: "workflow merges are not supported yet"})
+		}
 	}
 	if len(nodeIDs) > 0 && rootCount == 0 {
 		errorsList = append(errorsList, ValidationError{Field: "nodes", Message: "workflow must contain at least one root node"})
+	}
+
+	for _, node := range definition.Nodes {
+		if node.Type != "condition" {
+			continue
+		}
+
+		trueBranch := false
+		falseBranch := false
+		for _, edge := range definition.Edges {
+			if edge.From != node.ID {
+				continue
+			}
+
+			switch strings.ToLower(strings.TrimSpace(edge.Condition)) {
+			case "true":
+				trueBranch = true
+			case "false":
+				falseBranch = true
+			default:
+				errorsList = append(errorsList, ValidationError{Field: "edges", Message: "condition edges must be labeled true or false"})
+			}
+		}
+		if !trueBranch || !falseBranch {
+			errorsList = append(errorsList, ValidationError{Field: "edges", Message: "condition nodes must define both true and false branches"})
+		}
 	}
 
 	return ValidationResult{

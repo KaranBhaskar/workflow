@@ -2,10 +2,8 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -188,16 +186,29 @@ func (s *Service) ExecuteSync(ctx context.Context, tenantID, workflowID string, 
 		return Run{}, fmt.Errorf("create run: %w", err)
 	}
 
-	nodes, err := topologicalNodes(resolvedWorkflow.Definition)
+	graph, err := buildGraph(resolvedWorkflow.Definition)
 	if err != nil {
 		return Run{}, err
 	}
 
-	steps := make([]Step, 0, len(nodes))
-	stepOutputs := make(map[string]any, len(nodes))
-	for _, node := range nodes {
+	steps := make([]Step, 0, len(resolvedWorkflow.Definition.Nodes))
+	stepOutputs := make(map[string]any, len(resolvedWorkflow.Definition.Nodes))
+	lastNodeID := ""
+	queue := append([]string(nil), graph.roots...)
+	queued := make(map[string]bool, len(queue))
+	executed := make(map[string]bool, len(resolvedWorkflow.Definition.Nodes))
+	for _, nodeID := range queue {
+		queued[nodeID] = true
+	}
+
+	for len(queue) > 0 {
+		nodeID := queue[0]
+		queue = queue[1:]
+		node := graph.nodes[nodeID]
+
 		step, output, execErr := s.executeStep(ctx, run.ID, tenantID, node, input, stepOutputs)
 		steps = append(steps, step)
+		lastNodeID = node.ID
 		if execErr != nil {
 			run.Status = RunStatusFailed
 			run.Error = execErr.Error()
@@ -210,11 +221,19 @@ func (s *Service) ExecuteSync(ctx context.Context, tenantID, workflowID string, 
 			return run, nil
 		}
 
+		executed[node.ID] = true
 		stepOutputs[node.ID] = output
+		for _, nextID := range graph.next(node, output) {
+			if executed[nextID] || queued[nextID] {
+				continue
+			}
+			queue = append(queue, nextID)
+			queued[nextID] = true
+		}
 	}
 
 	run.Status = RunStatusCompleted
-	run.Output = buildRunOutput(nodes, stepOutputs)
+	run.Output = buildRunOutput(lastNodeID, stepOutputs)
 	run.CompletedAt = s.now()
 	if err := s.repository.CompleteRun(ctx, run, steps); err != nil {
 		return Run{}, fmt.Errorf("complete run: %w", err)
@@ -274,264 +293,11 @@ func (s *Service) executeNode(ctx context.Context, tenantID string, node workflo
 		return s.executeRetrieval(ctx, tenantID, node.Config, workflowInput)
 	case "llm":
 		return s.executeLLM(ctx, node.Config, workflowInput, stepOutputs)
+	case "condition":
+		return executeCondition(node.Config, workflowInput, stepOutputs)
 	case "audit_log":
 		return executeAudit(node.Config, stepOutputs), nil
 	default:
 		return nil, fmt.Errorf("node type %q is not supported by sync execution yet", node.Type)
 	}
-}
-
-func (s *Service) executeRetrieval(ctx context.Context, tenantID string, config map[string]any, workflowInput map[string]any) (any, error) {
-	documentIDs := stringSliceConfig(config, "document_ids")
-	if len(documentIDs) == 0 {
-		return nil, errors.New("retrieve_documents requires document_ids")
-	}
-
-	query := strings.ToLower(strings.TrimSpace(anyString(workflowInput[stringConfig(config, "query_input_key", "query")])))
-	limit := intConfig(config, "limit", 3)
-
-	type scoredChunk struct {
-		chunk documents.Chunk
-		score int
-	}
-
-	results := make([]scoredChunk, 0)
-	for _, documentID := range documentIDs {
-		chunks, err := s.documents.ListChunks(ctx, tenantID, documentID)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, chunk := range chunks {
-			score := lexicalScore(query, chunk.Content)
-			if query != "" && score == 0 {
-				continue
-			}
-			results = append(results, scoredChunk{chunk: chunk, score: score})
-		}
-	}
-
-	slices.SortFunc(results, func(left, right scoredChunk) int {
-		switch {
-		case left.score != right.score:
-			return right.score - left.score
-		case left.chunk.DocumentID != right.chunk.DocumentID:
-			return strings.Compare(left.chunk.DocumentID, right.chunk.DocumentID)
-		default:
-			return left.chunk.ChunkIndex - right.chunk.ChunkIndex
-		}
-	})
-	if limit > 0 && len(results) > limit {
-		results = results[:limit]
-	}
-
-	matches := make([]documents.Chunk, 0, len(results))
-	for _, result := range results {
-		matches = append(matches, result.chunk)
-	}
-
-	return map[string]any{
-		"query":     query,
-		"documents": matches,
-	}, nil
-}
-
-func (s *Service) executeLLM(ctx context.Context, config map[string]any, workflowInput map[string]any, stepOutputs map[string]any) (any, error) {
-	parts := make([]string, 0, 3)
-	if prompt := stringConfig(config, "prompt", ""); prompt != "" {
-		parts = append(parts, prompt)
-	}
-	if inputKey := stringConfig(config, "input_key", ""); inputKey != "" {
-		if inputValue := anyString(workflowInput[inputKey]); inputValue != "" {
-			parts = append(parts, inputValue)
-		}
-	}
-	if contextStep := stringConfig(config, "context_step", ""); contextStep != "" {
-		if contextValue, ok := stepOutputs[contextStep]; ok {
-			parts = append(parts, renderAny(contextValue))
-		}
-	}
-
-	prompt := strings.Join(parts, "\n\n")
-	response, err := s.llm.Generate(ctx, prompt)
-	if err != nil {
-		return nil, err
-	}
-
-	return map[string]any{
-		"prompt": prompt,
-		"text":   response,
-	}, nil
-}
-
-func executeAudit(config map[string]any, stepOutputs map[string]any) any {
-	result := map[string]any{
-		"message": stringConfig(config, "message", "audit logged"),
-	}
-	if fromStep := stringConfig(config, "from_step", ""); fromStep != "" {
-		result["from_step"] = fromStep
-		result["value"] = stepOutputs[fromStep]
-	}
-
-	return result
-}
-
-func buildRunOutput(nodes []workflow.Node, stepOutputs map[string]any) any {
-	if len(nodes) == 0 {
-		return nil
-	}
-
-	lastNode := nodes[len(nodes)-1]
-	return map[string]any{
-		"last_node": lastNode.ID,
-		"result":    stepOutputs[lastNode.ID],
-	}
-}
-
-func topologicalNodes(definition workflow.Definition) ([]workflow.Node, error) {
-	nodeByID := make(map[string]workflow.Node, len(definition.Nodes))
-	inDegree := make(map[string]int, len(definition.Nodes))
-	outbound := make(map[string][]string, len(definition.Nodes))
-
-	for _, node := range definition.Nodes {
-		nodeByID[node.ID] = node
-		inDegree[node.ID] = 0
-	}
-	for _, edge := range definition.Edges {
-		outbound[edge.From] = append(outbound[edge.From], edge.To)
-		inDegree[edge.To]++
-	}
-
-	queue := make([]string, 0, len(definition.Nodes))
-	queued := make(map[string]bool, len(definition.Nodes))
-	for _, node := range definition.Nodes {
-		if inDegree[node.ID] == 0 {
-			queue = append(queue, node.ID)
-			queued[node.ID] = true
-		}
-	}
-
-	ordered := make([]workflow.Node, 0, len(definition.Nodes))
-	for len(queue) > 0 {
-		currentID := queue[0]
-		queue = queue[1:]
-		ordered = append(ordered, nodeByID[currentID])
-
-		for _, nextID := range outbound[currentID] {
-			inDegree[nextID]--
-		}
-		for _, node := range definition.Nodes {
-			if inDegree[node.ID] == 0 && !queued[node.ID] {
-				queue = append(queue, node.ID)
-				queued[node.ID] = true
-			}
-		}
-	}
-
-	if len(ordered) != len(definition.Nodes) {
-		return nil, errors.New("workflow contains a cycle and cannot be executed")
-	}
-
-	return ordered, nil
-}
-
-func lexicalScore(query, content string) int {
-	if query == "" {
-		return 1
-	}
-
-	score := 0
-	lowerContent := strings.ToLower(content)
-	for _, term := range strings.Fields(query) {
-		if strings.Contains(lowerContent, term) {
-			score++
-		}
-	}
-
-	return score
-}
-
-func stringSliceConfig(config map[string]any, key string) []string {
-	values, ok := config[key]
-	if !ok {
-		return nil
-	}
-
-	switch typed := values.(type) {
-	case []string:
-		return append([]string(nil), typed...)
-	case []any:
-		result := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if text := strings.TrimSpace(anyString(item)); text != "" {
-				result = append(result, text)
-			}
-		}
-		return result
-	default:
-		return nil
-	}
-}
-
-func stringConfig(config map[string]any, key, fallback string) string {
-	if value, ok := config[key]; ok {
-		if text := strings.TrimSpace(anyString(value)); text != "" {
-			return text
-		}
-	}
-
-	return fallback
-}
-
-func intConfig(config map[string]any, key string, fallback int) int {
-	value, ok := config[key]
-	if !ok {
-		return fallback
-	}
-
-	switch typed := value.(type) {
-	case int:
-		return typed
-	case int64:
-		return int(typed)
-	case float64:
-		return int(typed)
-	default:
-		return fallback
-	}
-}
-
-func anyString(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return typed
-	default:
-		return renderAny(value)
-	}
-}
-
-func renderAny(value any) string {
-	if value == nil {
-		return ""
-	}
-
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Sprint(value)
-	}
-
-	return string(encoded)
-}
-
-func cloneMap(input map[string]any) map[string]any {
-	if len(input) == 0 {
-		return nil
-	}
-
-	cloned := make(map[string]any, len(input))
-	for key, value := range input {
-		cloned[key] = value
-	}
-
-	return cloned
 }

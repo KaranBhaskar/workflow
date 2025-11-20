@@ -53,6 +53,29 @@ func TestValidateDefinitionRejectsDuplicateNodesAndBadEdges(t *testing.T) {
 	}
 }
 
+func TestValidateDefinitionRejectsConditionWithoutTrueFalseBranches(t *testing.T) {
+	t.Parallel()
+
+	result := workflow.ValidateDefinition(workflow.Definition{
+		Name:    "conditional-flow",
+		Version: 1,
+		Nodes: []workflow.Node{
+			{ID: "route", Type: "condition"},
+			{ID: "next", Type: "audit_log"},
+		},
+		Edges: []workflow.Edge{
+			{From: "route", To: "next", Condition: "maybe"},
+		},
+	})
+
+	if result.Valid {
+		t.Fatal("expected invalid condition workflow")
+	}
+	if len(result.Errors) == 0 {
+		t.Fatal("expected validation errors")
+	}
+}
+
 func TestCreateRejectsInvalidWorkflow(t *testing.T) {
 	t.Parallel()
 
