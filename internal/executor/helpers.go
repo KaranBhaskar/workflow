@@ -54,6 +54,36 @@ func stringConfig(config map[string]any, key, fallback string) string {
 	return fallback
 }
 
+func stringMapConfig(config map[string]any, key string) map[string]string {
+	value, ok := config[key]
+	if !ok {
+		return nil
+	}
+
+	switch typed := value.(type) {
+	case map[string]string:
+		cloned := make(map[string]string, len(typed))
+		for key, value := range typed {
+			if cleanKey := strings.TrimSpace(key); cleanKey != "" {
+				cloned[cleanKey] = strings.TrimSpace(value)
+			}
+		}
+		return cloned
+	case map[string]any:
+		cloned := make(map[string]string, len(typed))
+		for key, value := range typed {
+			cleanKey := strings.TrimSpace(key)
+			cleanValue := strings.TrimSpace(anyString(value))
+			if cleanKey != "" && cleanValue != "" {
+				cloned[cleanKey] = cleanValue
+			}
+		}
+		return cloned
+	default:
+		return nil
+	}
+}
+
 func intConfig(config map[string]any, key string, fallback int) int {
 	value, ok := config[key]
 	if !ok {

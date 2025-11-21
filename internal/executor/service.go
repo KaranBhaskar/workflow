@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +73,10 @@ type LLMProvider interface {
 	Generate(ctx context.Context, prompt string) (string, error)
 }
 
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
 type MemoryRepository struct {
 	mu    sync.RWMutex
 	runs  map[string]Run
@@ -85,6 +90,7 @@ type Service struct {
 	workflows  *workflow.Service
 	documents  *documents.Service
 	llm        LLMProvider
+	httpClient HTTPClient
 	now        func() time.Time
 	newID      func() (string, error)
 }
@@ -106,9 +112,18 @@ func NewService(repository Repository, workflows *workflow.Service, documents *d
 		workflows:  workflows,
 		documents:  documents,
 		llm:        llm,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
 		now:        func() time.Time { return time.Now().UTC() },
 		newID:      ids.New,
 	}
+}
+
+func (s *Service) WithHTTPClient(client HTTPClient) *Service {
+	if client != nil {
+		s.httpClient = client
+	}
+
+	return s
 }
 
 func (r *MemoryRepository) CreateRun(_ context.Context, run Run) error {
@@ -295,6 +310,8 @@ func (s *Service) executeNode(ctx context.Context, tenantID string, node workflo
 		return s.executeLLM(ctx, node.Config, workflowInput, stepOutputs)
 	case "condition":
 		return executeCondition(node.Config, workflowInput, stepOutputs)
+	case "http_tool":
+		return s.executeHTTPTool(ctx, node.Config, workflowInput, stepOutputs)
 	case "audit_log":
 		return executeAudit(node.Config, stepOutputs), nil
 	default:

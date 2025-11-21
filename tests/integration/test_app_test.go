@@ -16,7 +16,17 @@ import (
 	"workflow/internal/workflow"
 )
 
+type stubHTTPClient func(*http.Request) (*http.Response, error)
+
+func (f stubHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func newAuthenticatedHandler(t *testing.T) http.Handler {
+	return newAuthenticatedHandlerWithHTTPClient(t, nil)
+}
+
+func newAuthenticatedHandlerWithHTTPClient(t *testing.T, httpClient executor.HTTPClient) http.Handler {
 	t.Helper()
 
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
@@ -51,7 +61,7 @@ func newAuthenticatedHandler(t *testing.T) http.Handler {
 		workflowService,
 		documentService,
 		executor.NewMockLLMProvider(),
-	)
+	).WithHTTPClient(httpClient)
 
 	return appapi.NewHandler(logger, healthService, authService, documentService, workflowService, executorService)
 }

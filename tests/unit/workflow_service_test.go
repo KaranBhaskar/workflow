@@ -76,6 +76,25 @@ func TestValidateDefinitionRejectsConditionWithoutTrueFalseBranches(t *testing.T
 	}
 }
 
+func TestValidateDefinitionRejectsHTTPToolWithoutURL(t *testing.T) {
+	t.Parallel()
+
+	result := workflow.ValidateDefinition(workflow.Definition{
+		Name:    "tool-flow",
+		Version: 1,
+		Nodes: []workflow.Node{
+			{ID: "notify", Type: "http_tool", Config: map[string]any{"method": "POST"}},
+		},
+	})
+
+	if result.Valid {
+		t.Fatal("expected invalid http tool workflow")
+	}
+	if len(result.Errors) == 0 {
+		t.Fatal("expected validation errors")
+	}
+}
+
 func TestCreateRejectsInvalidWorkflow(t *testing.T) {
 	t.Parallel()
 

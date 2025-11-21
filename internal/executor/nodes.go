@@ -1,9 +1,13 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -93,6 +97,49 @@ func (s *Service) executeLLM(ctx context.Context, config map[string]any, workflo
 	}, nil
 }
 
+func (s *Service) executeHTTPTool(ctx context.Context, config map[string]any, workflowInput map[string]any, stepOutputs map[string]any) (any, error) {
+	url := stringConfig(config, "url", "")
+	if url == "" {
+		return nil, errors.New("http_tool requires url")
+	}
+
+	method := strings.ToUpper(stringConfig(config, "method", http.MethodPost))
+	payload := httpToolPayload(config, workflowInput, stepOutputs)
+
+	var body io.Reader
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal http tool payload: %w", err)
+		}
+		body = bytes.NewReader(encoded)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("build http tool request: %w", err)
+	}
+	for key, value := range stringMapConfig(config, "headers") {
+		req.Header.Set(key, value)
+	}
+	if payload != nil && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("execute http tool request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	result, err := readHTTPToolResponse(resp, method, url)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 func executeAudit(config map[string]any, stepOutputs map[string]any) any {
 	result := map[string]any{
 		"message": stringConfig(config, "message", "audit logged"),
@@ -130,4 +177,62 @@ func executeCondition(config map[string]any, workflowInput map[string]any, stepO
 		"value":    value,
 		"target":   target,
 	}, nil
+}
+
+func httpToolPayload(config map[string]any, workflowInput map[string]any, stepOutputs map[string]any) any {
+	if body, ok := config["body"]; ok {
+		return body
+	}
+
+	payload := map[string]any{}
+	if inputKey := stringConfig(config, "input_key", ""); inputKey != "" {
+		payload["input"] = workflowInput[inputKey]
+		payload["input_key"] = inputKey
+	}
+	if contextStep := stringConfig(config, "context_step", ""); contextStep != "" {
+		payload["context"] = stepOutputs[contextStep]
+		payload["context_step"] = contextStep
+	}
+	if len(payload) == 0 {
+		return nil
+	}
+
+	return payload
+}
+
+func readHTTPToolResponse(resp *http.Response, method, url string) (map[string]any, error) {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read http tool response: %w", err)
+	}
+
+	result := map[string]any{
+		"method":      method,
+		"url":         url,
+		"status_code": resp.StatusCode,
+	}
+	if len(body) > 0 {
+		result["body"] = decodeHTTPToolBody(resp.Header.Get("Content-Type"), body)
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, fmt.Errorf("http tool returned status %d", resp.StatusCode)
+	}
+
+	return result, nil
+}
+
+func decodeHTTPToolBody(contentType string, body []byte) any {
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		return ""
+	}
+	if strings.Contains(strings.ToLower(contentType), "application/json") {
+		var decoded any
+		if err := json.Unmarshal(body, &decoded); err == nil {
+			return decoded
+		}
+	}
+
+	return text
 }

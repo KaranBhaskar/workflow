@@ -206,6 +206,7 @@ func ValidateDefinition(definition Definition) ValidationResult {
 		if !supportedNodeType(strings.TrimSpace(node.Type)) {
 			errorsList = append(errorsList, ValidationError{Field: fmt.Sprintf("nodes[%d].type", index), Message: "unsupported node type"})
 		}
+		errorsList = append(errorsList, validateNodeConfig(node, index)...)
 
 		nodeIDs[nodeID] = node
 	}
@@ -285,5 +286,50 @@ func supportedNodeType(nodeType string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func validateNodeConfig(node Node, index int) []ValidationError {
+	switch node.Type {
+	case "http_tool":
+		return validateHTTPToolNode(node, index)
+	default:
+		return nil
+	}
+}
+
+func validateHTTPToolNode(node Node, index int) []ValidationError {
+	errorsList := make([]ValidationError, 0, 2)
+	if strings.TrimSpace(anyString(node.Config["url"])) == "" {
+		errorsList = append(errorsList, ValidationError{Field: fmt.Sprintf("nodes[%d].config.url", index), Message: "http_tool url is required"})
+	}
+
+	method := strings.ToUpper(strings.TrimSpace(anyString(node.Config["method"])))
+	if method != "" && !supportedHTTPMethod(method) {
+		errorsList = append(errorsList, ValidationError{Field: fmt.Sprintf("nodes[%d].config.method", index), Message: "unsupported http method"})
+	}
+
+	return errorsList
+}
+
+func supportedHTTPMethod(method string) bool {
+	switch method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE":
+		return true
+	default:
+		return false
+	}
+}
+
+func anyString(value any) string {
+	if value == nil {
+		return ""
+	}
+
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		return fmt.Sprint(value)
 	}
 }
