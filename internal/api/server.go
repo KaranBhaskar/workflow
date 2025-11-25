@@ -97,6 +97,7 @@ func NewHandler(logger *slog.Logger, healthService *health.Service, authenticato
 	mux.Handle("POST /v1/workflows/{workflowID}/execute", requireAPIKey(authenticator, http.HandlerFunc(srv.handleExecuteWorkflow)))
 	mux.Handle("GET /v1/workflow-runs/{runID}", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetRun)))
 	mux.Handle("GET /v1/workflow-runs/{runID}/steps", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetRunSteps)))
+	mux.Handle("POST /v1/workflow-runs/{runID}/resume", requireAPIKey(authenticator, http.HandlerFunc(srv.handleResumeRun)))
 
 	return requestLogger(logger, mux)
 }
@@ -306,6 +307,35 @@ func (s server) handleGetRunSteps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stepsEnvelope{Steps: steps})
 }
 
+func (s server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
+	identity, executorService, ok := serviceContext(w, r, s.executorService, "executor")
+	if !ok {
+		return
+	}
+
+	var request struct {
+		Approved *bool          `json:"approved"`
+		Comment  string         `json:"comment"`
+		Input    map[string]any `json:"input"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workflow resume payload")
+		return
+	}
+	if request.Approved == nil {
+		writeError(w, http.StatusBadRequest, "approved decision is required")
+		return
+	}
+
+	run, err := executorService.ResumeApproval(r.Context(), identity.TenantID, r.PathValue("runID"), *request.Approved, request.Comment, request.Input)
+	if err != nil {
+		writeExecutionError(w, err, "failed to resume workflow run")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, runEnvelope{Run: run})
+}
+
 func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -409,6 +439,9 @@ func writeExecutionError(w http.ResponseWriter, err error, fallback string) {
 	case errors.Is(err, executor.ErrNotFound):
 		statusCode = http.StatusNotFound
 		message = "workflow run not found"
+	case errors.Is(err, executor.ErrRunNotAwaitingReview):
+		statusCode = http.StatusConflict
+		message = err.Error()
 	case errors.Is(err, executor.ErrInvalidTenant):
 		statusCode = http.StatusBadRequest
 		message = err.Error()

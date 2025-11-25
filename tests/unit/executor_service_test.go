@@ -81,7 +81,7 @@ func TestExecuteSyncCompletesLinearWorkflow(t *testing.T) {
 	}
 }
 
-func TestExecuteSyncMarksUnsupportedNodesFailed(t *testing.T) {
+func TestExecuteSyncPausesApprovalWorkflow(t *testing.T) {
 	t.Parallel()
 
 	documentService := documents.NewService(
@@ -93,7 +93,11 @@ func TestExecuteSyncMarksUnsupportedNodesFailed(t *testing.T) {
 		Name:    "approval-flow",
 		Version: 1,
 		Nodes: []workflow.Node{
-			{ID: "approval", Type: "approval"},
+			{ID: "review", Type: "approval", Config: map[string]any{"message": "manager approval required"}},
+			{ID: "audit", Type: "audit_log", Config: map[string]any{"message": "approved"}},
+		},
+		Edges: []workflow.Edge{
+			{From: "review", To: "audit"},
 		},
 	})
 	if err != nil {
@@ -111,11 +115,41 @@ func TestExecuteSyncMarksUnsupportedNodesFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute workflow: %v", err)
 	}
-	if run.Status != executor.RunStatusFailed {
-		t.Fatalf("expected failed run, got %q", run.Status)
+	if run.Status != executor.RunStatusWaitingApproval {
+		t.Fatalf("expected waiting approval run, got %q", run.Status)
 	}
-	if run.Error == "" {
-		t.Fatal("expected run error to be recorded")
+
+	steps, err := executorService.ListSteps(context.Background(), "tenant-a", run.ID)
+	if err != nil {
+		t.Fatalf("list steps: %v", err)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("expected 1 step before resume, got %d", len(steps))
+	}
+	if steps[0].Status != executor.StepStatusWaitingApproval {
+		t.Fatalf("expected waiting approval step, got %q", steps[0].Status)
+	}
+
+	resumedRun, err := executorService.ResumeApproval(context.Background(), "tenant-a", run.ID, true, "approved", nil)
+	if err != nil {
+		t.Fatalf("resume approval: %v", err)
+	}
+	if resumedRun.Status != executor.RunStatusCompleted {
+		t.Fatalf("expected completed resumed run, got %q", resumedRun.Status)
+	}
+
+	steps, err = executorService.ListSteps(context.Background(), "tenant-a", run.ID)
+	if err != nil {
+		t.Fatalf("list steps after resume: %v", err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 steps after resume, got %d", len(steps))
+	}
+	if steps[0].Status != executor.StepStatusCompleted {
+		t.Fatalf("expected approval step completed after resume, got %q", steps[0].Status)
+	}
+	if steps[1].NodeID != "audit" {
+		t.Fatalf("expected audit node after resume, got %q", steps[1].NodeID)
 	}
 }
 
@@ -247,5 +281,57 @@ func TestExecuteSyncCallsHTTPToolNode(t *testing.T) {
 	}
 	if body["received"] != "INC-42" {
 		t.Fatalf("expected received INC-42, got %#v", body["received"])
+	}
+}
+
+func TestResumeApprovalRejectsRun(t *testing.T) {
+	t.Parallel()
+
+	documentService := documents.NewService(
+		documents.NewMemoryRepository(),
+		documents.NewLocalObjectStore(t.TempDir()),
+	)
+	workflowService := workflow.NewService(workflow.NewMemoryRepository())
+	createdWorkflow, _, err := workflowService.Create(context.Background(), "tenant-a", workflow.Definition{
+		Name:    "reject-flow",
+		Version: 1,
+		Nodes: []workflow.Node{
+			{ID: "review", Type: "approval"},
+			{ID: "audit", Type: "audit_log", Config: map[string]any{"message": "should-not-run"}},
+		},
+		Edges: []workflow.Edge{
+			{From: "review", To: "audit"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+
+	executorService := executor.NewService(
+		executor.NewMemoryRepository(),
+		workflowService,
+		documentService,
+		executor.NewMockLLMProvider(),
+	)
+
+	run, err := executorService.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, nil)
+	if err != nil {
+		t.Fatalf("execute workflow: %v", err)
+	}
+
+	rejectedRun, err := executorService.ResumeApproval(context.Background(), "tenant-a", run.ID, false, "needs changes", nil)
+	if err != nil {
+		t.Fatalf("resume rejection: %v", err)
+	}
+	if rejectedRun.Status != executor.RunStatusFailed {
+		t.Fatalf("expected failed run after rejection, got %q", rejectedRun.Status)
+	}
+
+	steps, err := executorService.ListSteps(context.Background(), "tenant-a", run.ID)
+	if err != nil {
+		t.Fatalf("list steps: %v", err)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("expected only approval step after rejection, got %d", len(steps))
 	}
 }

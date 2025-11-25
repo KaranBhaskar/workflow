@@ -136,3 +136,61 @@ func cloneMap(input map[string]any) map[string]any {
 
 	return cloned
 }
+
+func cloneBoolMap(input map[string]bool) map[string]bool {
+	if len(input) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string]bool, len(input))
+	for key, value := range input {
+		cloned[key] = value
+	}
+
+	return cloned
+}
+
+func mergeInput(base, extra map[string]any) map[string]any {
+	merged := cloneMap(base)
+	if merged == nil {
+		merged = make(map[string]any, len(extra))
+	}
+	for key, value := range extra {
+		merged[key] = value
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+
+	return merged
+}
+
+func appendQueue(existing, next []string, executed map[string]bool) []string {
+	if len(existing) == 0 && len(next) == 0 {
+		return nil
+	}
+
+	queue := append([]string(nil), existing...)
+	queued := make(map[string]bool, len(queue))
+	for _, nodeID := range queue {
+		queued[nodeID] = true
+	}
+	for _, nodeID := range next {
+		if executed[nodeID] || queued[nodeID] {
+			continue
+		}
+		queue = append(queue, nodeID)
+		queued[nodeID] = true
+	}
+
+	return queue
+}
+
+func clonePendingState(pending pendingState) pendingState {
+	return pendingState{
+		WaitingNodeID: pending.WaitingNodeID,
+		Queue:         append([]string(nil), pending.Queue...),
+		StepOutputs:   cloneMap(pending.StepOutputs),
+		Executed:      cloneBoolMap(pending.Executed),
+	}
+}

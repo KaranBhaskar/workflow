@@ -15,23 +15,26 @@ import (
 )
 
 var (
-	ErrNotFound      = errors.New("workflow run not found")
-	ErrInvalidTenant = errors.New("invalid tenant")
+	ErrNotFound             = errors.New("workflow run not found")
+	ErrInvalidTenant        = errors.New("invalid tenant")
+	ErrRunNotAwaitingReview = errors.New("workflow run is not awaiting approval")
 )
 
 type RunStatus string
 
 const (
-	RunStatusRunning   RunStatus = "running"
-	RunStatusCompleted RunStatus = "completed"
-	RunStatusFailed    RunStatus = "failed"
+	RunStatusRunning         RunStatus = "running"
+	RunStatusWaitingApproval RunStatus = "waiting_approval"
+	RunStatusCompleted       RunStatus = "completed"
+	RunStatusFailed          RunStatus = "failed"
 )
 
 type StepStatus string
 
 const (
-	StepStatusCompleted StepStatus = "completed"
-	StepStatusFailed    StepStatus = "failed"
+	StepStatusWaitingApproval StepStatus = "waiting_approval"
+	StepStatusCompleted       StepStatus = "completed"
+	StepStatusFailed          StepStatus = "failed"
 )
 
 type Run struct {
@@ -62,9 +65,18 @@ type Step struct {
 	CompletedAt time.Time      `json:"completed_at,omitempty"`
 }
 
+type pendingState struct {
+	WaitingNodeID string
+	Queue         []string
+	StepOutputs   map[string]any
+	Executed      map[string]bool
+}
+
 type Repository interface {
 	CreateRun(ctx context.Context, run Run) error
 	CompleteRun(ctx context.Context, run Run, steps []Step) error
+	SavePending(ctx context.Context, run Run, steps []Step, pending pendingState) error
+	LoadPending(ctx context.Context, tenantID, runID string) (Run, []Step, pendingState, error)
 	GetRun(ctx context.Context, tenantID, runID string) (Run, error)
 	ListSteps(ctx context.Context, tenantID, runID string) ([]Step, error)
 }
@@ -78,9 +90,10 @@ type HTTPClient interface {
 }
 
 type MemoryRepository struct {
-	mu    sync.RWMutex
-	runs  map[string]Run
-	steps map[string][]Step
+	mu      sync.RWMutex
+	runs    map[string]Run
+	steps   map[string][]Step
+	pending map[string]pendingState
 }
 
 type MockLLMProvider struct{}
@@ -97,8 +110,9 @@ type Service struct {
 
 func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{
-		runs:  make(map[string]Run),
-		steps: make(map[string][]Step),
+		runs:    make(map[string]Run),
+		steps:   make(map[string][]Step),
+		pending: make(map[string]pendingState),
 	}
 }
 
@@ -140,7 +154,35 @@ func (r *MemoryRepository) CompleteRun(_ context.Context, run Run, steps []Step)
 
 	r.runs[run.ID] = run
 	r.steps[run.ID] = append([]Step(nil), steps...)
+	delete(r.pending, run.ID)
 	return nil
+}
+
+func (r *MemoryRepository) SavePending(_ context.Context, run Run, steps []Step, pending pendingState) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.runs[run.ID] = run
+	r.steps[run.ID] = append([]Step(nil), steps...)
+	r.pending[run.ID] = clonePendingState(pending)
+	return nil
+}
+
+func (r *MemoryRepository) LoadPending(_ context.Context, tenantID, runID string) (Run, []Step, pendingState, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	run, ok := r.runs[runID]
+	if !ok || run.TenantID != tenantID {
+		return Run{}, nil, pendingState{}, ErrNotFound
+	}
+
+	pending, ok := r.pending[runID]
+	if !ok {
+		return Run{}, nil, pendingState{}, ErrRunNotAwaitingReview
+	}
+
+	return run, append([]Step(nil), r.steps[runID]...), clonePendingState(pending), nil
 }
 
 func (r *MemoryRepository) GetRun(_ context.Context, tenantID, runID string) (Run, error) {
@@ -206,51 +248,35 @@ func (s *Service) ExecuteSync(ctx context.Context, tenantID, workflowID string, 
 		return Run{}, err
 	}
 
-	steps := make([]Step, 0, len(resolvedWorkflow.Definition.Nodes))
-	stepOutputs := make(map[string]any, len(resolvedWorkflow.Definition.Nodes))
-	lastNodeID := ""
-	queue := append([]string(nil), graph.roots...)
-	queued := make(map[string]bool, len(queue))
-	executed := make(map[string]bool, len(resolvedWorkflow.Definition.Nodes))
-	for _, nodeID := range queue {
-		queued[nodeID] = true
+	state, pause, failure, err := s.continueExecution(ctx, run.ID, tenantID, graph, input, newExecutionState(graph.roots, len(resolvedWorkflow.Definition.Nodes)))
+	if err != nil {
+		return Run{}, err
 	}
-
-	for len(queue) > 0 {
-		nodeID := queue[0]
-		queue = queue[1:]
-		node := graph.nodes[nodeID]
-
-		step, output, execErr := s.executeStep(ctx, run.ID, tenantID, node, input, stepOutputs)
-		steps = append(steps, step)
-		lastNodeID = node.ID
-		if execErr != nil {
-			run.Status = RunStatusFailed
-			run.Error = execErr.Error()
-			run.Output = map[string]any{"failed_node": node.ID}
-			run.CompletedAt = s.now()
-			if completeErr := s.repository.CompleteRun(ctx, run, steps); completeErr != nil {
-				return Run{}, fmt.Errorf("complete failed run: %w", completeErr)
-			}
-
-			return run, nil
+	if failure != nil {
+		run.Status = RunStatusFailed
+		run.Error = failure.Err.Error()
+		run.Output = map[string]any{"failed_node": failure.NodeID}
+		run.CompletedAt = s.now()
+		if completeErr := s.repository.CompleteRun(ctx, run, state.steps); completeErr != nil {
+			return Run{}, fmt.Errorf("complete failed run: %w", completeErr)
 		}
 
-		executed[node.ID] = true
-		stepOutputs[node.ID] = output
-		for _, nextID := range graph.next(node, output) {
-			if executed[nextID] || queued[nextID] {
-				continue
-			}
-			queue = append(queue, nextID)
-			queued[nextID] = true
+		return run, nil
+	}
+	if pause != nil {
+		run.Status = RunStatusWaitingApproval
+		run.Output = pause.output
+		if err := s.repository.SavePending(ctx, run, state.steps, pause.pending); err != nil {
+			return Run{}, fmt.Errorf("save pending run: %w", err)
 		}
+
+		return run, nil
 	}
 
 	run.Status = RunStatusCompleted
-	run.Output = buildRunOutput(lastNodeID, stepOutputs)
+	run.Output = buildRunOutput(state.lastNodeID, state.stepOutputs)
 	run.CompletedAt = s.now()
-	if err := s.repository.CompleteRun(ctx, run, steps); err != nil {
+	if err := s.repository.CompleteRun(ctx, run, state.steps); err != nil {
 		return Run{}, fmt.Errorf("complete run: %w", err)
 	}
 
@@ -271,6 +297,99 @@ func (s *Service) ListSteps(ctx context.Context, tenantID, runID string) ([]Step
 	}
 
 	return s.repository.ListSteps(ctx, tenantID, runID)
+}
+
+func (s *Service) ResumeApproval(ctx context.Context, tenantID, runID string, approved bool, comment string, input map[string]any) (Run, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return Run{}, ErrInvalidTenant
+	}
+
+	run, steps, pending, err := s.repository.LoadPending(ctx, tenantID, runID)
+	if err != nil {
+		return Run{}, err
+	}
+
+	resolvedWorkflow, err := s.workflows.Get(ctx, tenantID, run.WorkflowID)
+	if err != nil {
+		return Run{}, err
+	}
+
+	graph, err := buildGraph(resolvedWorkflow.Definition)
+	if err != nil {
+		return Run{}, err
+	}
+
+	run.Input = mergeInput(run.Input, input)
+	if len(steps) == 0 || steps[len(steps)-1].NodeID != pending.WaitingNodeID {
+		return Run{}, ErrRunNotAwaitingReview
+	}
+
+	approvalOutput := map[string]any{
+		"approved": approved,
+		"comment":  strings.TrimSpace(comment),
+	}
+	steps[len(steps)-1].Status = StepStatusCompleted
+	steps[len(steps)-1].Output = approvalOutput
+	steps[len(steps)-1].CompletedAt = s.now()
+
+	if !approved {
+		run.Status = RunStatusFailed
+		run.Error = "approval rejected"
+		run.Output = map[string]any{
+			"failed_node": pending.WaitingNodeID,
+			"approval":    approvalOutput,
+		}
+		run.CompletedAt = s.now()
+		if err := s.repository.CompleteRun(ctx, run, steps); err != nil {
+			return Run{}, fmt.Errorf("complete rejected run: %w", err)
+		}
+
+		return run, nil
+	}
+
+	state := stateFromPending(steps, pending)
+	state.stepOutputs[pending.WaitingNodeID] = approvalOutput
+	state.executed[pending.WaitingNodeID] = true
+	state.lastNodeID = pending.WaitingNodeID
+
+	run.Status = RunStatusRunning
+	run.Error = ""
+	run.Output = nil
+	run.CompletedAt = time.Time{}
+
+	state, pause, failure, err := s.continueExecution(ctx, run.ID, tenantID, graph, run.Input, state)
+	if err != nil {
+		return Run{}, err
+	}
+	if failure != nil {
+		run.Status = RunStatusFailed
+		run.Error = failure.Err.Error()
+		run.Output = map[string]any{"failed_node": failure.NodeID}
+		run.CompletedAt = s.now()
+		if err := s.repository.CompleteRun(ctx, run, state.steps); err != nil {
+			return Run{}, fmt.Errorf("complete failed resumed run: %w", err)
+		}
+
+		return run, nil
+	}
+	if pause != nil {
+		run.Status = RunStatusWaitingApproval
+		run.Output = pause.output
+		if err := s.repository.SavePending(ctx, run, state.steps, pause.pending); err != nil {
+			return Run{}, fmt.Errorf("save resumed pending run: %w", err)
+		}
+
+		return run, nil
+	}
+
+	run.Status = RunStatusCompleted
+	run.Output = buildRunOutput(state.lastNodeID, state.stepOutputs)
+	run.CompletedAt = s.now()
+	if err := s.repository.CompleteRun(ctx, run, state.steps); err != nil {
+		return Run{}, fmt.Errorf("complete resumed run: %w", err)
+	}
+
+	return run, nil
 }
 
 func (s *Service) executeStep(ctx context.Context, runID, tenantID string, node workflow.Node, workflowInput map[string]any, stepOutputs map[string]any) (Step, any, error) {
