@@ -98,13 +98,13 @@ func TestSyncWorkflowExecution(t *testing.T) {
 	}
 }
 
-func TestSyncExecutionRejectsUnsupportedMode(t *testing.T) {
+func TestExecutionRejectsUnknownMode(t *testing.T) {
 	t.Parallel()
 
 	handler := newAuthenticatedHandler(t)
 	workflowID := createExecutionWorkflow(t, handler, uploadDocumentForExecution(t, handler, "doc.txt", []byte("hello workflow execution")))
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", bytes.NewBufferString(`{"mode":"async"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", bytes.NewBufferString(`{"mode":"later"}`))
 	req.Header.Set("X-API-Key", "dev-key-tenant-a")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)

@@ -18,11 +18,13 @@ var (
 	ErrNotFound             = errors.New("workflow run not found")
 	ErrInvalidTenant        = errors.New("invalid tenant")
 	ErrRunNotAwaitingReview = errors.New("workflow run is not awaiting approval")
+	ErrAsyncDisabled        = errors.New("async execution is not configured")
 )
 
 type RunStatus string
 
 const (
+	RunStatusQueued          RunStatus = "queued"
 	RunStatusRunning         RunStatus = "running"
 	RunStatusWaitingApproval RunStatus = "waiting_approval"
 	RunStatusCompleted       RunStatus = "completed"
@@ -74,6 +76,7 @@ type pendingState struct {
 
 type Repository interface {
 	CreateRun(ctx context.Context, run Run) error
+	UpdateRun(ctx context.Context, run Run) error
 	CompleteRun(ctx context.Context, run Run, steps []Step) error
 	SavePending(ctx context.Context, run Run, steps []Step, pending pendingState) error
 	LoadPending(ctx context.Context, tenantID, runID string) (Run, []Step, pendingState, error)
@@ -87,6 +90,18 @@ type LLMProvider interface {
 
 type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
+}
+
+type AsyncJob struct {
+	RunID      string         `json:"run_id"`
+	TenantID   string         `json:"tenant_id"`
+	WorkflowID string         `json:"workflow_id"`
+	Input      map[string]any `json:"input,omitempty"`
+}
+
+type JobQueue interface {
+	Enqueue(ctx context.Context, job AsyncJob) error
+	Dequeue(ctx context.Context, wait time.Duration) (AsyncJob, bool, error)
 }
 
 type MemoryRepository struct {
@@ -104,6 +119,7 @@ type Service struct {
 	documents  *documents.Service
 	llm        LLMProvider
 	httpClient HTTPClient
+	jobQueue   JobQueue
 	now        func() time.Time
 	newID      func() (string, error)
 }
@@ -140,6 +156,14 @@ func (s *Service) WithHTTPClient(client HTTPClient) *Service {
 	return s
 }
 
+func (s *Service) WithJobQueue(queue JobQueue) *Service {
+	if queue != nil {
+		s.jobQueue = queue
+	}
+
+	return s
+}
+
 func (r *MemoryRepository) CreateRun(_ context.Context, run Run) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -155,6 +179,14 @@ func (r *MemoryRepository) CompleteRun(_ context.Context, run Run, steps []Step)
 	r.runs[run.ID] = run
 	r.steps[run.ID] = append([]Step(nil), steps...)
 	delete(r.pending, run.ID)
+	return nil
+}
+
+func (r *MemoryRepository) UpdateRun(_ context.Context, run Run) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.runs[run.ID] = run
 	return nil
 }
 
@@ -248,39 +280,7 @@ func (s *Service) ExecuteSync(ctx context.Context, tenantID, workflowID string, 
 		return Run{}, err
 	}
 
-	state, pause, failure, err := s.continueExecution(ctx, run.ID, tenantID, graph, input, newExecutionState(graph.roots, len(resolvedWorkflow.Definition.Nodes)))
-	if err != nil {
-		return Run{}, err
-	}
-	if failure != nil {
-		run.Status = RunStatusFailed
-		run.Error = failure.Err.Error()
-		run.Output = map[string]any{"failed_node": failure.NodeID}
-		run.CompletedAt = s.now()
-		if completeErr := s.repository.CompleteRun(ctx, run, state.steps); completeErr != nil {
-			return Run{}, fmt.Errorf("complete failed run: %w", completeErr)
-		}
-
-		return run, nil
-	}
-	if pause != nil {
-		run.Status = RunStatusWaitingApproval
-		run.Output = pause.output
-		if err := s.repository.SavePending(ctx, run, state.steps, pause.pending); err != nil {
-			return Run{}, fmt.Errorf("save pending run: %w", err)
-		}
-
-		return run, nil
-	}
-
-	run.Status = RunStatusCompleted
-	run.Output = buildRunOutput(state.lastNodeID, state.stepOutputs)
-	run.CompletedAt = s.now()
-	if err := s.repository.CompleteRun(ctx, run, state.steps); err != nil {
-		return Run{}, fmt.Errorf("complete run: %w", err)
-	}
-
-	return run, nil
+	return s.executeRun(ctx, run, graph, input, newExecutionState(graph.roots, len(resolvedWorkflow.Definition.Nodes)))
 }
 
 func (s *Service) GetRun(ctx context.Context, tenantID, runID string) (Run, error) {
@@ -357,39 +357,7 @@ func (s *Service) ResumeApproval(ctx context.Context, tenantID, runID string, ap
 	run.Output = nil
 	run.CompletedAt = time.Time{}
 
-	state, pause, failure, err := s.continueExecution(ctx, run.ID, tenantID, graph, run.Input, state)
-	if err != nil {
-		return Run{}, err
-	}
-	if failure != nil {
-		run.Status = RunStatusFailed
-		run.Error = failure.Err.Error()
-		run.Output = map[string]any{"failed_node": failure.NodeID}
-		run.CompletedAt = s.now()
-		if err := s.repository.CompleteRun(ctx, run, state.steps); err != nil {
-			return Run{}, fmt.Errorf("complete failed resumed run: %w", err)
-		}
-
-		return run, nil
-	}
-	if pause != nil {
-		run.Status = RunStatusWaitingApproval
-		run.Output = pause.output
-		if err := s.repository.SavePending(ctx, run, state.steps, pause.pending); err != nil {
-			return Run{}, fmt.Errorf("save resumed pending run: %w", err)
-		}
-
-		return run, nil
-	}
-
-	run.Status = RunStatusCompleted
-	run.Output = buildRunOutput(state.lastNodeID, state.stepOutputs)
-	run.CompletedAt = s.now()
-	if err := s.repository.CompleteRun(ctx, run, state.steps); err != nil {
-		return Run{}, fmt.Errorf("complete resumed run: %w", err)
-	}
-
-	return run, nil
+	return s.executeRun(ctx, run, graph, run.Input, state)
 }
 
 func (s *Service) executeStep(ctx context.Context, runID, tenantID string, node workflow.Node, workflowInput map[string]any, stepOutputs map[string]any) (Step, any, error) {

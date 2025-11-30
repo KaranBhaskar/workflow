@@ -16,6 +16,7 @@ import (
 	"workflow/internal/platform/health"
 	"workflow/internal/platform/logging"
 	"workflow/internal/tenant"
+	appworker "workflow/internal/worker"
 	"workflow/internal/workflow"
 )
 
@@ -41,12 +42,14 @@ func main() {
 		documents.NewLocalObjectStore(cfg.Storage.ObjectDir),
 	)
 	workflowService := workflow.NewService(workflow.NewMemoryRepository())
+	jobQueue := buildJobQueue(cfg)
 	executorService := executor.NewService(
 		executor.NewMemoryRepository(),
 		workflowService,
 		documentService,
 		executor.NewMockLLMProvider(),
-	)
+	).WithJobQueue(jobQueue)
+	backgroundWorker := appworker.NewService(logger, jobQueue, executorService)
 
 	server := &http.Server{
 		Addr:         cfg.HTTP.Addr,
@@ -60,6 +63,11 @@ func main() {
 	defer stop()
 
 	errCh := make(chan error, 1)
+	go func() {
+		if err := backgroundWorker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			errCh <- err
+		}
+	}()
 	go func() {
 		logger.Info("api server starting", "addr", cfg.HTTP.Addr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -102,6 +110,14 @@ func buildDependencyCheckers(cfg config.Config) []health.Checker {
 	}
 
 	return checkers
+}
+
+func buildJobQueue(cfg config.Config) executor.JobQueue {
+	if cfg.Dependencies.RedisAddr != "" {
+		return appworker.NewRedisQueue(cfg.Dependencies.RedisAddr, "")
+	}
+
+	return appworker.NewMemoryQueue(128)
 }
 
 func buildBootstrapTenants(entries []config.BootstrapAPIKey) []tenant.Tenant {

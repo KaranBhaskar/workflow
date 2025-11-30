@@ -256,25 +256,34 @@ func (s server) handleExecuteWorkflow(w http.ResponseWriter, r *http.Request) {
 	if mode == "" {
 		mode = "sync"
 	}
-	if mode != "sync" {
-		writeError(w, http.StatusBadRequest, "only sync execution is supported in this version")
+	var (
+		run        executor.Run
+		err        error
+		statusCode = http.StatusOK
+	)
+	switch mode {
+	case "sync":
+		ctx := r.Context()
+		if request.Options.TimeoutMS > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(request.Options.TimeoutMS)*time.Millisecond)
+			defer cancel()
+		}
+
+		run, err = executorService.ExecuteSync(ctx, identity.TenantID, r.PathValue("workflowID"), request.Input)
+	case "async":
+		run, err = executorService.ExecuteAsync(r.Context(), identity.TenantID, r.PathValue("workflowID"), request.Input)
+		statusCode = http.StatusAccepted
+	default:
+		writeError(w, http.StatusBadRequest, "execution mode must be sync or async")
 		return
 	}
-
-	ctx := r.Context()
-	if request.Options.TimeoutMS > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(request.Options.TimeoutMS)*time.Millisecond)
-		defer cancel()
-	}
-
-	run, err := executorService.ExecuteSync(ctx, identity.TenantID, r.PathValue("workflowID"), request.Input)
 	if err != nil {
 		writeExecutionError(w, err, "failed to execute workflow")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, runEnvelope{Run: run})
+	writeJSON(w, statusCode, runEnvelope{Run: run})
 }
 
 func (s server) handleGetRun(w http.ResponseWriter, r *http.Request) {
@@ -442,7 +451,7 @@ func writeExecutionError(w http.ResponseWriter, err error, fallback string) {
 	case errors.Is(err, executor.ErrRunNotAwaitingReview):
 		statusCode = http.StatusConflict
 		message = err.Error()
-	case errors.Is(err, executor.ErrInvalidTenant):
+	case errors.Is(err, executor.ErrInvalidTenant), errors.Is(err, executor.ErrAsyncDisabled):
 		statusCode = http.StatusBadRequest
 		message = err.Error()
 	}
