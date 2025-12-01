@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"workflow/internal/audit"
 	"workflow/internal/auth"
 	"workflow/internal/documents"
 	"workflow/internal/executor"
@@ -30,6 +31,7 @@ func (sr *statusRecorder) WriteHeader(statusCode int) {
 
 type server struct {
 	healthService   *health.Service
+	auditService    *audit.Service
 	documentService *documents.Service
 	workflowService *workflow.Service
 	executorService *executor.Service
@@ -63,9 +65,14 @@ type stepsEnvelope struct {
 	Steps []executor.Step `json:"steps"`
 }
 
-func NewHandler(logger *slog.Logger, healthService *health.Service, authenticator *auth.Service, documentService *documents.Service, workflowService *workflow.Service, executorService *executor.Service) http.Handler {
+type auditEventsEnvelope struct {
+	Events []audit.Event `json:"events"`
+}
+
+func NewHandler(logger *slog.Logger, healthService *health.Service, authenticator *auth.Service, documentService *documents.Service, workflowService *workflow.Service, executorService *executor.Service, auditService *audit.Service) http.Handler {
 	srv := server{
 		healthService:   healthService,
+		auditService:    auditService,
 		documentService: documentService,
 		workflowService: workflowService,
 		executorService: executorService,
@@ -102,6 +109,7 @@ func NewHandler(logger *slog.Logger, healthService *health.Service, authenticato
 	mux.Handle("GET /v1/workflow-runs", requireAPIKey(authenticator, http.HandlerFunc(srv.handleListRuns)))
 	mux.Handle("GET /v1/workflow-runs/{runID}", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetRun)))
 	mux.Handle("GET /v1/workflow-runs/{runID}/steps", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetRunSteps)))
+	mux.Handle("GET /v1/workflow-runs/{runID}/events", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetRunEvents)))
 	mux.Handle("POST /v1/workflow-runs/{runID}/resume", requireAPIKey(authenticator, http.HandlerFunc(srv.handleResumeRun)))
 
 	return requestLogger(logger, mux)
@@ -334,6 +342,26 @@ func (s server) handleGetRunSteps(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, stepsEnvelope{Steps: steps})
+}
+
+func (s server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
+	identity, auditService, ok := serviceContext(w, r, s.auditService, "audit")
+	if !ok {
+		return
+	}
+
+	if _, err := s.executorService.GetRun(r.Context(), identity.TenantID, r.PathValue("runID")); err != nil {
+		writeExecutionError(w, err, "failed to fetch workflow run events")
+		return
+	}
+
+	events, err := auditService.ListRunEvents(r.Context(), identity.TenantID, r.PathValue("runID"))
+	if err != nil {
+		writeExecutionError(w, err, "failed to fetch workflow run events")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, auditEventsEnvelope{Events: events})
 }
 
 func (s server) handleResumeRun(w http.ResponseWriter, r *http.Request) {

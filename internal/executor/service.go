@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"workflow/internal/audit"
 	"workflow/internal/documents"
 	"workflow/internal/platform/ids"
 	"workflow/internal/workflow"
@@ -125,6 +126,7 @@ type Service struct {
 	repository Repository
 	workflows  *workflow.Service
 	documents  *documents.Service
+	audit      *audit.Service
 	llm        LLMProvider
 	httpClient HTTPClient
 	jobQueue   JobQueue
@@ -167,6 +169,14 @@ func (s *Service) WithHTTPClient(client HTTPClient) *Service {
 func (s *Service) WithJobQueue(queue JobQueue) *Service {
 	if queue != nil {
 		s.jobQueue = queue
+	}
+
+	return s
+}
+
+func (s *Service) WithAudit(auditService *audit.Service) *Service {
+	if auditService != nil {
+		s.audit = auditService
 	}
 
 	return s
@@ -376,6 +386,15 @@ func (s *Service) ResumeApproval(ctx context.Context, tenantID, runID string, ap
 	steps[len(steps)-1].Status = StepStatusCompleted
 	steps[len(steps)-1].Output = approvalOutput
 	steps[len(steps)-1].CompletedAt = s.now()
+	s.recordAudit(ctx, tenantID, audit.RecordParams{
+		RunID:      run.ID,
+		WorkflowID: run.WorkflowID,
+		StepID:     steps[len(steps)-1].ID,
+		NodeID:     pending.WaitingNodeID,
+		Type:       "approval_resolved",
+		Message:    "approval decision recorded",
+		Metadata:   approvalOutput,
+	})
 
 	if !approved {
 		run.Status = RunStatusFailed
@@ -388,6 +407,10 @@ func (s *Service) ResumeApproval(ctx context.Context, tenantID, runID string, ap
 		if err := s.repository.CompleteRun(ctx, run, steps); err != nil {
 			return Run{}, fmt.Errorf("complete rejected run: %w", err)
 		}
+		s.recordAudit(ctx, tenantID, newRunAudit(run, "run_failed", run.Error, map[string]any{
+			"failed_node": pending.WaitingNodeID,
+			"approval":    approvalOutput,
+		}))
 
 		return run, nil
 	}
@@ -432,6 +455,13 @@ func (s *Service) executeStep(ctx context.Context, runID, tenantID string, node 
 
 	step.Output = output
 	return step, output, nil
+}
+
+func (s *Service) recordAudit(ctx context.Context, tenantID string, params audit.RecordParams) {
+	if s.audit == nil {
+		return
+	}
+	_ = s.audit.Record(ctx, tenantID, params)
 }
 
 func (s *Service) executeNode(ctx context.Context, tenantID string, node workflow.Node, workflowInput map[string]any, stepOutputs map[string]any) (any, error) {

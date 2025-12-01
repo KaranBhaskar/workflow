@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"workflow/internal/audit"
 )
 
 const defaultAsyncMaxAttempts = 3
@@ -40,6 +42,7 @@ func (s *Service) ExecuteAsync(ctx context.Context, tenantID, workflowID string,
 	if err := s.repository.CreateRun(ctx, run); err != nil {
 		return Run{}, fmt.Errorf("create async run: %w", err)
 	}
+	s.recordAudit(ctx, tenantID, newRunAudit(run, "run_queued", "async run queued", nil))
 
 	job := AsyncJob{
 		RunID:       run.ID,
@@ -126,6 +129,9 @@ func (s *Service) MarkAsyncRetry(ctx context.Context, run Run, delay time.Durati
 	if err := s.repository.UpdateRun(ctx, run); err != nil {
 		return Run{}, fmt.Errorf("mark async retry: %w", err)
 	}
+	s.recordAudit(ctx, run.TenantID, newRunAudit(run, "retry_scheduled", "async retry scheduled", map[string]any{
+		"retry_in_ms": delay.Milliseconds(),
+	}))
 
 	return run, nil
 }
@@ -140,11 +146,13 @@ func (s *Service) MarkDeadLetter(ctx context.Context, run Run) (Run, error) {
 	if err := s.repository.UpdateRun(ctx, run); err != nil {
 		return Run{}, fmt.Errorf("mark dead letter: %w", err)
 	}
+	s.recordAudit(ctx, run.TenantID, newRunAudit(run, "run_dead_lettered", "async run moved to dead letter", nil))
 
 	return run, nil
 }
 
 func (s *Service) executeRun(ctx context.Context, run Run, graph graph, input map[string]any, state executionState) (Run, error) {
+	s.recordAudit(ctx, run.TenantID, newRunAudit(run, "run_started", "workflow run started", nil))
 	state, pause, failure, err := s.continueExecution(ctx, run.ID, run.TenantID, graph, input, state)
 	if err != nil {
 		return Run{}, err
@@ -157,6 +165,9 @@ func (s *Service) executeRun(ctx context.Context, run Run, graph graph, input ma
 		if err := s.repository.CompleteRun(ctx, run, state.steps); err != nil {
 			return Run{}, fmt.Errorf("complete failed run: %w", err)
 		}
+		s.recordAudit(ctx, run.TenantID, newRunAudit(run, "run_failed", run.Error, map[string]any{
+			"failed_node": failure.NodeID,
+		}))
 
 		return run, nil
 	}
@@ -166,6 +177,7 @@ func (s *Service) executeRun(ctx context.Context, run Run, graph graph, input ma
 		if err := s.repository.SavePending(ctx, run, state.steps, pause.pending); err != nil {
 			return Run{}, fmt.Errorf("save pending run: %w", err)
 		}
+		s.recordAudit(ctx, run.TenantID, newRunAudit(run, "run_waiting_approval", "workflow run is waiting for approval", nil))
 
 		return run, nil
 	}
@@ -176,6 +188,17 @@ func (s *Service) executeRun(ctx context.Context, run Run, graph graph, input ma
 	if err := s.repository.CompleteRun(ctx, run, state.steps); err != nil {
 		return Run{}, fmt.Errorf("complete run: %w", err)
 	}
+	s.recordAudit(ctx, run.TenantID, newRunAudit(run, "run_completed", "workflow run completed", nil))
 
 	return run, nil
+}
+
+func newRunAudit(run Run, eventType, message string, metadata map[string]any) audit.RecordParams {
+	return audit.RecordParams{
+		RunID:      run.ID,
+		WorkflowID: run.WorkflowID,
+		Type:       eventType,
+		Message:    message,
+		Metadata:   metadata,
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"workflow/internal/audit"
 	"workflow/internal/workflow"
 )
 
@@ -72,6 +73,9 @@ func (s *Service) continueExecution(ctx context.Context, runID, tenantID string,
 
 			state.steps = append(state.steps, step)
 			state.lastNodeID = node.ID
+			s.recordAudit(ctx, tenantID, auditParamsForStep("step_waiting_approval", "", step, map[string]any{
+				"output": output,
+			}))
 			return state, &pausePoint{
 				output: output,
 				pending: pendingState{
@@ -87,9 +91,15 @@ func (s *Service) continueExecution(ctx context.Context, runID, tenantID string,
 		state.steps = append(state.steps, step)
 		state.lastNodeID = node.ID
 		if execErr != nil {
+			s.recordAudit(ctx, tenantID, auditParamsForStep("step_failed", execErr.Error(), step, map[string]any{
+				"error": execErr.Error(),
+			}))
 			return state, nil, &runFailure{NodeID: node.ID, Err: execErr}, nil
 		}
 
+		s.recordAudit(ctx, tenantID, auditParamsForStep("step_completed", "", step, map[string]any{
+			"output": output,
+		}))
 		state.executed[node.ID] = true
 		state.stepOutputs[node.ID] = output
 		for _, nextID := range graph.next(node, output) {
@@ -126,4 +136,15 @@ func (s *Service) awaitApproval(runID string, node workflow.Node) (Step, any, er
 	}
 
 	return step, output, nil
+}
+
+func auditParamsForStep(eventType, message string, step Step, metadata map[string]any) audit.RecordParams {
+	return audit.RecordParams{
+		RunID:    step.RunID,
+		StepID:   step.ID,
+		NodeID:   step.NodeID,
+		Type:     eventType,
+		Message:  message,
+		Metadata: metadata,
+	}
 }

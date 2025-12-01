@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"workflow/internal/api"
+	"workflow/internal/audit"
 	"workflow/internal/auth"
 	"workflow/internal/documents"
 	"workflow/internal/executor"
@@ -37,6 +38,7 @@ func main() {
 		auth.NewMemoryRepository(buildBootstrapAPIKeys(cfg.Auth.BootstrapAPIKeys)),
 		tenantService,
 	)
+	auditService := audit.NewService(audit.NewMemoryRepository())
 	documentService := documents.NewService(
 		documents.NewMemoryRepository(),
 		documents.NewLocalObjectStore(cfg.Storage.ObjectDir),
@@ -48,12 +50,12 @@ func main() {
 		workflowService,
 		documentService,
 		executor.NewMockLLMProvider(),
-	).WithJobQueue(jobQueue)
+	).WithJobQueue(jobQueue).WithAudit(auditService)
 	backgroundWorker := appworker.NewService(logger, jobQueue, executorService)
 
 	server := &http.Server{
 		Addr:         cfg.HTTP.Addr,
-		Handler:      api.NewHandler(logger, healthService, authService, documentService, workflowService, executorService),
+		Handler:      api.NewHandler(logger, healthService, authService, documentService, workflowService, executorService, auditService),
 		ReadTimeout:  cfg.HTTP.ReadTimeout,
 		WriteTimeout: cfg.HTTP.WriteTimeout,
 		IdleTimeout:  cfg.HTTP.IdleTimeout,

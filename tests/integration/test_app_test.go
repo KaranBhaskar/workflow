@@ -9,6 +9,7 @@ import (
 	"time"
 
 	appapi "workflow/internal/api"
+	"workflow/internal/audit"
 	"workflow/internal/auth"
 	"workflow/internal/documents"
 	"workflow/internal/executor"
@@ -66,6 +67,7 @@ func newTestApp(t *testing.T, httpClient executor.HTTPClient) testApp {
 		documents.NewMemoryRepository(),
 		documents.NewLocalObjectStore(t.TempDir()),
 	)
+	auditService := audit.NewService(audit.NewMemoryRepository())
 	workflowService := workflow.NewService(workflow.NewMemoryRepository())
 	queue := appworker.NewMemoryQueue(32)
 	executorService := executor.NewService(
@@ -73,11 +75,11 @@ func newTestApp(t *testing.T, httpClient executor.HTTPClient) testApp {
 		workflowService,
 		documentService,
 		executor.NewMockLLMProvider(),
-	).WithHTTPClient(httpClient).WithJobQueue(queue)
+	).WithHTTPClient(httpClient).WithJobQueue(queue).WithAudit(auditService)
 	workerService := appworker.NewService(logger, queue, executorService).WithPollTimeout(5 * time.Millisecond)
 
 	return testApp{
-		Handler: appapi.NewHandler(logger, healthService, authService, documentService, workflowService, executorService),
+		Handler: appapi.NewHandler(logger, healthService, authService, documentService, workflowService, executorService, auditService),
 		Worker:  workerService,
 	}
 }

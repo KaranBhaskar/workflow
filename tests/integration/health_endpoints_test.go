@@ -38,7 +38,7 @@ func TestHealthEndpoints(t *testing.T) {
 		stubChecker{name: "postgres"},
 		stubChecker{name: "redis"},
 	)
-	handler := appapi.NewHandler(logger, healthService, nil, nil, nil, nil)
+	handler := appapi.NewHandler(logger, healthService, nil, nil, nil, nil, nil)
 
 	t.Run("liveness returns ok", func(t *testing.T) {
 		t.Parallel()
@@ -102,7 +102,7 @@ func TestReadinessEndpointReturns503ForDependencyFailure(t *testing.T) {
 		time.Second,
 		stubChecker{name: "postgres", err: errors.New("dial tcp: connection refused")},
 	)
-	handler := appapi.NewHandler(logger, healthService, nil, nil, nil, nil)
+	handler := appapi.NewHandler(logger, healthService, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/health/ready", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
