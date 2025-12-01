@@ -55,6 +55,10 @@ type runEnvelope struct {
 	Run executor.Run `json:"run"`
 }
 
+type runsEnvelope struct {
+	Runs []executor.Run `json:"runs"`
+}
+
 type stepsEnvelope struct {
 	Steps []executor.Step `json:"steps"`
 }
@@ -95,6 +99,7 @@ func NewHandler(logger *slog.Logger, healthService *health.Service, authenticato
 	mux.Handle("GET /v1/workflows/{workflowID}", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetWorkflow)))
 	mux.Handle("POST /v1/workflows/{workflowID}/validate", requireAPIKey(authenticator, http.HandlerFunc(srv.handleValidateWorkflow)))
 	mux.Handle("POST /v1/workflows/{workflowID}/execute", requireAPIKey(authenticator, http.HandlerFunc(srv.handleExecuteWorkflow)))
+	mux.Handle("GET /v1/workflow-runs", requireAPIKey(authenticator, http.HandlerFunc(srv.handleListRuns)))
 	mux.Handle("GET /v1/workflow-runs/{runID}", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetRun)))
 	mux.Handle("GET /v1/workflow-runs/{runID}/steps", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetRunSteps)))
 	mux.Handle("POST /v1/workflow-runs/{runID}/resume", requireAPIKey(authenticator, http.HandlerFunc(srv.handleResumeRun)))
@@ -299,6 +304,21 @@ func (s server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, runEnvelope{Run: run})
+}
+
+func (s server) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	identity, executorService, ok := serviceContext(w, r, s.executorService, "executor")
+	if !ok {
+		return
+	}
+
+	runs, err := executorService.ListRuns(r.Context(), identity.TenantID, executor.RunStatus(strings.TrimSpace(r.URL.Query().Get("status"))))
+	if err != nil {
+		writeExecutionError(w, err, "failed to list workflow runs")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, runsEnvelope{Runs: runs})
 }
 
 func (s server) handleGetRunSteps(w http.ResponseWriter, r *http.Request) {

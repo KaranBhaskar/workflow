@@ -53,6 +53,22 @@ func (q *RedisQueue) Enqueue(ctx context.Context, job executor.AsyncJob) error {
 	return nil
 }
 
+func (q *RedisQueue) EnqueueAfter(ctx context.Context, job executor.AsyncJob, delay time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
+		<-timer.C
+		_ = q.Enqueue(context.Background(), job)
+	}()
+
+	return nil
+}
+
 func (q *RedisQueue) Dequeue(ctx context.Context, wait time.Duration) (executor.AsyncJob, bool, error) {
 	timeoutSeconds := int(wait.Seconds())
 	if timeoutSeconds < 1 {

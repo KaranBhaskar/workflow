@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ const (
 	RunStatusWaitingApproval RunStatus = "waiting_approval"
 	RunStatusCompleted       RunStatus = "completed"
 	RunStatusFailed          RunStatus = "failed"
+	RunStatusDeadLetter      RunStatus = "dead_letter"
 )
 
 type StepStatus string
@@ -45,6 +47,8 @@ type Run struct {
 	WorkflowID  string         `json:"workflow_id"`
 	Status      RunStatus      `json:"status"`
 	TriggerMode string         `json:"trigger_mode"`
+	Attempt     int            `json:"attempt"`
+	MaxAttempts int            `json:"max_attempts"`
 	Input       map[string]any `json:"input,omitempty"`
 	Output      any            `json:"output,omitempty"`
 	Error       string         `json:"error,omitempty"`
@@ -81,6 +85,7 @@ type Repository interface {
 	SavePending(ctx context.Context, run Run, steps []Step, pending pendingState) error
 	LoadPending(ctx context.Context, tenantID, runID string) (Run, []Step, pendingState, error)
 	GetRun(ctx context.Context, tenantID, runID string) (Run, error)
+	ListRuns(ctx context.Context, tenantID string, status RunStatus) ([]Run, error)
 	ListSteps(ctx context.Context, tenantID, runID string) ([]Step, error)
 }
 
@@ -93,14 +98,17 @@ type HTTPClient interface {
 }
 
 type AsyncJob struct {
-	RunID      string         `json:"run_id"`
-	TenantID   string         `json:"tenant_id"`
-	WorkflowID string         `json:"workflow_id"`
-	Input      map[string]any `json:"input,omitempty"`
+	RunID       string         `json:"run_id"`
+	TenantID    string         `json:"tenant_id"`
+	WorkflowID  string         `json:"workflow_id"`
+	Attempt     int            `json:"attempt"`
+	MaxAttempts int            `json:"max_attempts"`
+	Input       map[string]any `json:"input,omitempty"`
 }
 
 type JobQueue interface {
 	Enqueue(ctx context.Context, job AsyncJob) error
+	EnqueueAfter(ctx context.Context, job AsyncJob, delay time.Duration) error
 	Dequeue(ctx context.Context, wait time.Duration) (AsyncJob, bool, error)
 }
 
@@ -229,6 +237,35 @@ func (r *MemoryRepository) GetRun(_ context.Context, tenantID, runID string) (Ru
 	return run, nil
 }
 
+func (r *MemoryRepository) ListRuns(_ context.Context, tenantID string, status RunStatus) ([]Run, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	runs := make([]Run, 0, len(r.runs))
+	for _, run := range r.runs {
+		if run.TenantID != tenantID {
+			continue
+		}
+		if status != "" && run.Status != status {
+			continue
+		}
+		runs = append(runs, run)
+	}
+
+	slices.SortFunc(runs, func(left, right Run) int {
+		switch {
+		case left.CreatedAt.After(right.CreatedAt):
+			return -1
+		case left.CreatedAt.Before(right.CreatedAt):
+			return 1
+		default:
+			return strings.Compare(left.ID, right.ID)
+		}
+	})
+
+	return runs, nil
+}
+
 func (r *MemoryRepository) ListSteps(_ context.Context, tenantID, runID string) ([]Step, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -297,6 +334,14 @@ func (s *Service) ListSteps(ctx context.Context, tenantID, runID string) ([]Step
 	}
 
 	return s.repository.ListSteps(ctx, tenantID, runID)
+}
+
+func (s *Service) ListRuns(ctx context.Context, tenantID string, status RunStatus) ([]Run, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return nil, ErrInvalidTenant
+	}
+
+	return s.repository.ListRuns(ctx, tenantID, status)
 }
 
 func (s *Service) ResumeApproval(ctx context.Context, tenantID, runID string, approved bool, comment string, input map[string]any) (Run, error) {

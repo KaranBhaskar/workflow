@@ -88,11 +88,16 @@ func drainAsyncJob(t *testing.T, app testApp) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	processed, err := app.Worker.ProcessNext(ctx)
-	if err != nil {
-		t.Fatalf("process async job: %v", err)
-	}
-	if !processed {
-		t.Fatal("expected async job to be processed")
+	for {
+		processed, err := app.Worker.ProcessNext(ctx)
+		if err != nil {
+			t.Fatalf("process async job: %v", err)
+		}
+		if processed {
+			return
+		}
+		if ctx.Err() != nil {
+			t.Fatal("expected async job to be processed")
+		}
 	}
 }

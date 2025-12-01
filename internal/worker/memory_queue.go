@@ -30,6 +30,22 @@ func (q *MemoryQueue) Enqueue(ctx context.Context, job executor.AsyncJob) error 
 	}
 }
 
+func (q *MemoryQueue) EnqueueAfter(ctx context.Context, job executor.AsyncJob, delay time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
+		<-timer.C
+		q.jobs <- cloneJob(job)
+	}()
+
+	return nil
+}
+
 func (q *MemoryQueue) Dequeue(ctx context.Context, wait time.Duration) (executor.AsyncJob, bool, error) {
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
@@ -46,10 +62,12 @@ func (q *MemoryQueue) Dequeue(ctx context.Context, wait time.Duration) (executor
 
 func cloneJob(job executor.AsyncJob) executor.AsyncJob {
 	return executor.AsyncJob{
-		RunID:      job.RunID,
-		TenantID:   job.TenantID,
-		WorkflowID: job.WorkflowID,
-		Input:      cloneInput(job.Input),
+		RunID:       job.RunID,
+		TenantID:    job.TenantID,
+		WorkflowID:  job.WorkflowID,
+		Attempt:     job.Attempt,
+		MaxAttempts: job.MaxAttempts,
+		Input:       cloneInput(job.Input),
 	}
 }
 

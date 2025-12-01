@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
+
+const defaultAsyncMaxAttempts = 3
 
 func (s *Service) ExecuteAsync(ctx context.Context, tenantID, workflowID string, input map[string]any) (Run, error) {
 	if strings.TrimSpace(tenantID) == "" {
@@ -29,6 +32,8 @@ func (s *Service) ExecuteAsync(ctx context.Context, tenantID, workflowID string,
 		WorkflowID:  workflowID,
 		Status:      RunStatusQueued,
 		TriggerMode: "async",
+		Attempt:     0,
+		MaxAttempts: defaultAsyncMaxAttempts,
 		Input:       cloneMap(input),
 		CreatedAt:   createdAt,
 	}
@@ -37,10 +42,12 @@ func (s *Service) ExecuteAsync(ctx context.Context, tenantID, workflowID string,
 	}
 
 	job := AsyncJob{
-		RunID:      run.ID,
-		TenantID:   tenantID,
-		WorkflowID: workflowID,
-		Input:      cloneMap(input),
+		RunID:       run.ID,
+		TenantID:    tenantID,
+		WorkflowID:  workflowID,
+		Attempt:     0,
+		MaxAttempts: defaultAsyncMaxAttempts,
+		Input:       cloneMap(input),
 	}
 	if err := s.jobQueue.Enqueue(ctx, job); err != nil {
 		run.Status = RunStatusFailed
@@ -94,6 +101,10 @@ func (s *Service) ProcessAsyncJob(ctx context.Context, job AsyncJob) (Run, error
 	}
 
 	run.Status = RunStatusRunning
+	run.Attempt = job.Attempt + 1
+	if job.MaxAttempts > 0 {
+		run.MaxAttempts = job.MaxAttempts
+	}
 	run.Input = mergeInput(run.Input, job.Input)
 	run.StartedAt = s.now()
 	if err := s.repository.UpdateRun(ctx, run); err != nil {
@@ -101,6 +112,36 @@ func (s *Service) ProcessAsyncJob(ctx context.Context, job AsyncJob) (Run, error
 	}
 
 	return s.executeRun(ctx, run, graph, run.Input, newExecutionState(graph.roots, len(resolvedWorkflow.Definition.Nodes)))
+}
+
+func (s *Service) MarkAsyncRetry(ctx context.Context, run Run, delay time.Duration) (Run, error) {
+	run.Status = RunStatusQueued
+	run.CompletedAt = time.Time{}
+	run.Output = map[string]any{
+		"retry_scheduled": true,
+		"retry_in_ms":     delay.Milliseconds(),
+		"attempt":         run.Attempt,
+		"max_attempts":    run.MaxAttempts,
+	}
+	if err := s.repository.UpdateRun(ctx, run); err != nil {
+		return Run{}, fmt.Errorf("mark async retry: %w", err)
+	}
+
+	return run, nil
+}
+
+func (s *Service) MarkDeadLetter(ctx context.Context, run Run) (Run, error) {
+	run.Status = RunStatusDeadLetter
+	run.Output = map[string]any{
+		"dead_lettered": true,
+		"attempt":       run.Attempt,
+		"max_attempts":  run.MaxAttempts,
+	}
+	if err := s.repository.UpdateRun(ctx, run); err != nil {
+		return Run{}, fmt.Errorf("mark dead letter: %w", err)
+	}
+
+	return run, nil
 }
 
 func (s *Service) executeRun(ctx context.Context, run Run, graph graph, input map[string]any, state executionState) (Run, error) {

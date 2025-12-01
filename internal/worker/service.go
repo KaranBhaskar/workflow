@@ -13,6 +13,7 @@ type Service struct {
 	queue       executor.JobQueue
 	executor    *executor.Service
 	pollTimeout time.Duration
+	baseBackoff time.Duration
 }
 
 func NewService(logger *slog.Logger, queue executor.JobQueue, executorService *executor.Service) *Service {
@@ -21,6 +22,7 @@ func NewService(logger *slog.Logger, queue executor.JobQueue, executorService *e
 		queue:       queue,
 		executor:    executorService,
 		pollTimeout: 250 * time.Millisecond,
+		baseBackoff: 50 * time.Millisecond,
 	}
 }
 
@@ -38,7 +40,28 @@ func (s *Service) ProcessNext(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	_, err = s.executor.ProcessAsyncJob(ctx, job)
+	run, err := s.executor.ProcessAsyncJob(ctx, job)
+	if err != nil {
+		return true, err
+	}
+	if run.Status != executor.RunStatusFailed {
+		return true, nil
+	}
+	if run.Attempt < run.MaxAttempts {
+		job.Attempt = run.Attempt
+		job.MaxAttempts = run.MaxAttempts
+		delay := s.retryDelay(run.Attempt)
+		if _, err := s.executor.MarkAsyncRetry(ctx, run, delay); err != nil {
+			return true, err
+		}
+		if err := s.queue.EnqueueAfter(ctx, job, delay); err != nil {
+			return true, err
+		}
+
+		return true, nil
+	}
+
+	_, err = s.executor.MarkDeadLetter(ctx, run)
 	return true, err
 }
 
@@ -63,4 +86,12 @@ func (s *Service) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+func (s *Service) retryDelay(attempt int) time.Duration {
+	if attempt <= 1 {
+		return s.baseBackoff
+	}
+
+	return s.baseBackoff * time.Duration(1<<(attempt-1))
 }
