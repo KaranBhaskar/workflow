@@ -13,6 +13,7 @@ import (
 	"workflow/internal/audit"
 	"workflow/internal/documents"
 	"workflow/internal/platform/ids"
+	"workflow/internal/tenant"
 	"workflow/internal/workflow"
 )
 
@@ -127,6 +128,7 @@ type Service struct {
 	workflows  *workflow.Service
 	documents  *documents.Service
 	audit      *audit.Service
+	trigger    *tenant.TriggerControl
 	llm        LLMProvider
 	httpClient HTTPClient
 	jobQueue   JobQueue
@@ -177,6 +179,14 @@ func (s *Service) WithJobQueue(queue JobQueue) *Service {
 func (s *Service) WithAudit(auditService *audit.Service) *Service {
 	if auditService != nil {
 		s.audit = auditService
+	}
+
+	return s
+}
+
+func (s *Service) WithTriggerControl(control *tenant.TriggerControl) *Service {
+	if control != nil {
+		s.trigger = control
 	}
 
 	return s
@@ -352,6 +362,47 @@ func (s *Service) ListRuns(ctx context.Context, tenantID string, status RunStatu
 	}
 
 	return s.repository.ListRuns(ctx, tenantID, status)
+}
+
+func (s *Service) ReserveExecution(tenantID string) (tenant.TriggerQuota, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return tenant.TriggerQuota{}, ErrInvalidTenant
+	}
+	if s.trigger == nil {
+		return tenant.TriggerQuota{}, nil
+	}
+
+	return s.trigger.Allow(tenantID)
+}
+
+func (s *Service) LookupIdempotentRun(ctx context.Context, tenantID, key, fingerprint string) (Run, bool, error) {
+	if s.trigger == nil {
+		return Run{}, false, nil
+	}
+
+	record, ok, err := s.trigger.Lookup(tenantID, key, fingerprint)
+	if err != nil || !ok {
+		return Run{}, ok, err
+	}
+
+	run, err := s.repository.GetRun(ctx, tenantID, record.RunID)
+	if err != nil {
+		return Run{}, false, nil
+	}
+
+	return run, true, nil
+}
+
+func (s *Service) StoreIdempotentRun(tenantID, key, fingerprint string, run Run) error {
+	if s.trigger == nil {
+		return nil
+	}
+
+	return s.trigger.Store(tenantID, key, tenant.IdempotencyRecord{
+		Fingerprint: fingerprint,
+		RunID:       run.ID,
+		TriggerMode: run.TriggerMode,
+	})
 }
 
 func (s *Service) ResumeApproval(ctx context.Context, tenantID, runID string, approved bool, comment string, input map[string]any) (Run, error) {

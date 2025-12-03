@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -12,6 +13,7 @@ type Config struct {
 	AppEnv          string
 	HTTP            HTTPConfig
 	Auth            AuthConfig
+	Limits          LimitsConfig
 	Storage         StorageConfig
 	Dependencies    DependencyConfig
 	ShutdownTimeout time.Duration
@@ -33,6 +35,11 @@ type DependencyConfig struct {
 
 type StorageConfig struct {
 	ObjectDir string
+}
+
+type LimitsConfig struct {
+	TenantExecuteLimit  int
+	TenantExecuteWindow time.Duration
 }
 
 func Load(defaultServiceName string) (Config, error) {
@@ -61,6 +68,11 @@ func Load(defaultServiceName string) (Config, error) {
 		return Config{}, err
 	}
 
+	executeWindow, err := durationEnv("TENANT_EXECUTE_WINDOW", time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+
 	authConfig, err := bootstrapAuthConfig()
 	if err != nil {
 		return Config{}, err
@@ -83,6 +95,10 @@ func Load(defaultServiceName string) (Config, error) {
 		},
 		Storage: StorageConfig{
 			ObjectDir: stringEnv("OBJECT_STORAGE_DIR", filepath.Join(os.TempDir(), "workflow-objects")),
+		},
+		Limits: LimitsConfig{
+			TenantExecuteLimit:  intEnv("TENANT_EXECUTE_LIMIT", 20),
+			TenantExecuteWindow: executeWindow,
 		},
 		Auth:            authConfig,
 		ShutdownTimeout: shutdownTimeout,
@@ -109,4 +125,18 @@ func durationEnv(key string, fallback time.Duration) (time.Duration, error) {
 	}
 
 	return parsed, nil
+}
+
+func intEnv(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+
+	return parsed
 }

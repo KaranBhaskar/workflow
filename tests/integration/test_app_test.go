@@ -38,7 +38,21 @@ type testApp struct {
 	Worker  *appworker.Service
 }
 
+type testAppOptions struct {
+	HTTPClient    executor.HTTPClient
+	TriggerLimit  int
+	TriggerWindow time.Duration
+}
+
 func newTestApp(t *testing.T, httpClient executor.HTTPClient) testApp {
+	return newTestAppWithOptions(t, testAppOptions{
+		HTTPClient:    httpClient,
+		TriggerLimit:  20,
+		TriggerWindow: time.Minute,
+	})
+}
+
+func newTestAppWithOptions(t *testing.T, options testAppOptions) testApp {
 	t.Helper()
 
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
@@ -67,6 +81,7 @@ func newTestApp(t *testing.T, httpClient executor.HTTPClient) testApp {
 		documents.NewMemoryRepository(),
 		documents.NewLocalObjectStore(t.TempDir()),
 	)
+	triggerControl := tenant.NewTriggerControl(options.TriggerLimit, options.TriggerWindow)
 	auditService := audit.NewService(audit.NewMemoryRepository())
 	workflowService := workflow.NewService(workflow.NewMemoryRepository())
 	queue := appworker.NewMemoryQueue(32)
@@ -75,7 +90,7 @@ func newTestApp(t *testing.T, httpClient executor.HTTPClient) testApp {
 		workflowService,
 		documentService,
 		executor.NewMockLLMProvider(),
-	).WithHTTPClient(httpClient).WithJobQueue(queue).WithAudit(auditService)
+	).WithHTTPClient(options.HTTPClient).WithJobQueue(queue).WithAudit(auditService).WithTriggerControl(triggerControl)
 	workerService := appworker.NewService(logger, queue, executorService).WithPollTimeout(5 * time.Millisecond)
 
 	return testApp{

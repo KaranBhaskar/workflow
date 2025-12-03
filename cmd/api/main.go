@@ -38,6 +38,7 @@ func main() {
 		auth.NewMemoryRepository(buildBootstrapAPIKeys(cfg.Auth.BootstrapAPIKeys)),
 		tenantService,
 	)
+	triggerControl := tenant.NewTriggerControl(cfg.Limits.TenantExecuteLimit, cfg.Limits.TenantExecuteWindow)
 	auditService := audit.NewService(audit.NewMemoryRepository())
 	documentService := documents.NewService(
 		documents.NewMemoryRepository(),
@@ -50,7 +51,7 @@ func main() {
 		workflowService,
 		documentService,
 		executor.NewMockLLMProvider(),
-	).WithJobQueue(jobQueue).WithAudit(auditService)
+	).WithJobQueue(jobQueue).WithAudit(auditService).WithTriggerControl(triggerControl)
 	backgroundWorker := appworker.NewService(logger, jobQueue, executorService)
 
 	server := &http.Server{

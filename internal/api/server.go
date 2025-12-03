@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"workflow/internal/documents"
 	"workflow/internal/executor"
 	"workflow/internal/platform/health"
+	"workflow/internal/tenant"
 	"workflow/internal/workflow"
 )
 
@@ -269,9 +271,32 @@ func (s server) handleExecuteWorkflow(w http.ResponseWriter, r *http.Request) {
 	if mode == "" {
 		mode = "sync"
 	}
+	fingerprint, err := executionFingerprint(mode, r.PathValue("workflowID"), request.Input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to fingerprint workflow execution request")
+		return
+	}
+
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if replayedRun, ok, err := executorService.LookupIdempotentRun(r.Context(), identity.TenantID, idempotencyKey, fingerprint); err != nil {
+		writeExecutionError(w, err, "failed to resolve idempotent workflow run")
+		return
+	} else if ok {
+		w.Header().Set("X-Idempotent-Replay", "true")
+		writeJSON(w, statusCodeForRun(replayedRun), runEnvelope{Run: replayedRun})
+		return
+	}
+
+	quota, err := executorService.ReserveExecution(identity.TenantID)
+	if err != nil {
+		writeQuotaHeaders(w, quota)
+		writeExecutionError(w, err, "failed to reserve tenant execution capacity")
+		return
+	}
+	writeQuotaHeaders(w, quota)
+
 	var (
 		run        executor.Run
-		err        error
 		statusCode = http.StatusOK
 	)
 	switch mode {
@@ -293,6 +318,10 @@ func (s server) handleExecuteWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeExecutionError(w, err, "failed to execute workflow")
+		return
+	}
+	if err := executorService.StoreIdempotentRun(identity.TenantID, idempotencyKey, fingerprint, run); err != nil {
+		writeExecutionError(w, err, "failed to store idempotent workflow run")
 		return
 	}
 
@@ -499,12 +528,60 @@ func writeExecutionError(w http.ResponseWriter, err error, fallback string) {
 	case errors.Is(err, executor.ErrRunNotAwaitingReview):
 		statusCode = http.StatusConflict
 		message = err.Error()
+	case errors.Is(err, tenant.ErrIdempotencyConflict):
+		statusCode = http.StatusConflict
+		message = err.Error()
+	case errors.Is(err, tenant.ErrRateLimited):
+		statusCode = http.StatusTooManyRequests
+		message = err.Error()
 	case errors.Is(err, executor.ErrInvalidTenant), errors.Is(err, executor.ErrAsyncDisabled):
 		statusCode = http.StatusBadRequest
 		message = err.Error()
 	}
 
 	writeError(w, statusCode, message)
+}
+
+func executionFingerprint(mode, workflowID string, input map[string]any) (string, error) {
+	payload, err := json.Marshal(struct {
+		Mode       string         `json:"mode"`
+		WorkflowID string         `json:"workflow_id"`
+		Input      map[string]any `json:"input,omitempty"`
+	}{
+		Mode:       mode,
+		WorkflowID: workflowID,
+		Input:      input,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return string(payload), nil
+}
+
+func statusCodeForRun(run executor.Run) int {
+	if run.TriggerMode == "async" {
+		return http.StatusAccepted
+	}
+
+	return http.StatusOK
+}
+
+func writeQuotaHeaders(w http.ResponseWriter, quota tenant.TriggerQuota) {
+	if quota.Limit <= 0 {
+		return
+	}
+
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(quota.Limit))
+	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(quota.Remaining))
+	if !quota.ResetAt.IsZero() {
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(quota.ResetAt.Unix(), 10))
+		retryAfter := int(time.Until(quota.ResetAt).Seconds())
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	}
 }
 
 func sniffedContent(file io.Reader) (io.Reader, string, error) {
