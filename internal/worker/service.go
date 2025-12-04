@@ -5,6 +5,11 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"workflow/internal/executor"
 )
 
@@ -40,11 +45,24 @@ func (s *Service) ProcessNext(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
+	ctx, span := otel.Tracer("workflow/internal/worker").Start(ctx, "worker.process_next")
+	span.SetAttributes(
+		attribute.String("tenant.id", job.TenantID),
+		attribute.String("workflow.id", job.WorkflowID),
+		attribute.String("run.id", job.RunID),
+		attribute.Int("run.attempt", job.Attempt),
+		attribute.Int("run.max_attempts", job.MaxAttempts),
+	)
+	defer span.End()
+
 	run, err := s.executor.ProcessAsyncJob(ctx, job)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return true, err
 	}
 	if run.Status != executor.RunStatusFailed {
+		span.SetAttributes(attribute.String("run.status", string(run.Status)))
 		return true, nil
 	}
 	if run.Attempt < run.MaxAttempts {
@@ -52,16 +70,28 @@ func (s *Service) ProcessNext(ctx context.Context) (bool, error) {
 		job.MaxAttempts = run.MaxAttempts
 		delay := s.retryDelay(run.Attempt)
 		if _, err := s.executor.MarkAsyncRetry(ctx, run, delay); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return true, err
 		}
 		if err := s.queue.EnqueueAfter(ctx, job, delay); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return true, err
 		}
+		span.AddEvent("retry_scheduled", oteltrace.WithAttributes(attribute.Int64("retry.delay_ms", delay.Milliseconds())))
+		span.SetAttributes(attribute.String("run.status", string(executor.RunStatusQueued)))
 
 		return true, nil
 	}
 
 	_, err = s.executor.MarkDeadLetter(ctx, run)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return true, err
+	}
+	span.SetAttributes(attribute.String("run.status", string(executor.RunStatusDeadLetter)))
 	return true, err
 }
 

@@ -12,6 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"workflow/internal/audit"
 	"workflow/internal/auth"
 	"workflow/internal/documents"
@@ -423,24 +428,52 @@ func (s server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
+	tracer := otel.Tracer("workflow/internal/api")
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		ctx, span := tracer.Start(r.Context(), "http.request", oteltrace.WithAttributes(
+			attribute.String("http.method", r.Method),
+			attribute.String("http.path", r.URL.Path),
+		))
+		defer span.End()
+
 		recorder := &statusRecorder{
 			ResponseWriter: w,
 			statusCode:     http.StatusOK,
 		}
 
-		next.ServeHTTP(recorder, r)
+		next.ServeHTTP(recorder, r.WithContext(ctx))
 
+		durationMS := time.Since(start).Milliseconds()
+		span.SetAttributes(
+			attribute.Int("http.status_code", recorder.statusCode),
+			attribute.Int64("http.duration_ms", durationMS),
+		)
+		if recorder.statusCode >= http.StatusInternalServerError {
+			span.SetStatus(codes.Error, http.StatusText(recorder.statusCode))
+		}
+
+		traceID, spanID := traceLogFields(span.SpanContext())
 		logger.Info(
 			"http request completed",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status_code", recorder.statusCode,
-			"duration_ms", time.Since(start).Milliseconds(),
+			"duration_ms", durationMS,
 			"remote_addr", r.RemoteAddr,
+			"trace_id", traceID,
+			"span_id", spanID,
 		)
 	})
+}
+
+func traceLogFields(spanContext oteltrace.SpanContext) (string, string) {
+	if !spanContext.IsValid() {
+		return "", ""
+	}
+
+	return spanContext.TraceID().String(), spanContext.SpanID().String()
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {

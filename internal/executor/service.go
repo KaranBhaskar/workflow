@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"workflow/internal/audit"
 	"workflow/internal/documents"
 	"workflow/internal/platform/ids"
@@ -307,15 +309,25 @@ func (s *Service) ExecuteSync(ctx context.Context, tenantID, workflowID string, 
 		return Run{}, ErrInvalidTenant
 	}
 
+	ctx, span := startTrace(ctx, "workflow.run.sync",
+		attribute.String("tenant.id", tenantID),
+		attribute.String("workflow.id", workflowID),
+		attribute.String("run.trigger_mode", "sync"),
+	)
+	defer span.End()
+
 	resolvedWorkflow, err := s.workflows.Get(ctx, tenantID, workflowID)
 	if err != nil {
+		recordTraceError(span, err)
 		return Run{}, err
 	}
 
 	runID, err := s.newID()
 	if err != nil {
+		recordTraceError(span, err)
 		return Run{}, fmt.Errorf("generate run id: %w", err)
 	}
+	span.SetAttributes(attribute.String("run.id", runID))
 
 	startedAt := s.now()
 	run := Run{
@@ -329,15 +341,24 @@ func (s *Service) ExecuteSync(ctx context.Context, tenantID, workflowID string, 
 		StartedAt:   startedAt,
 	}
 	if err := s.repository.CreateRun(ctx, run); err != nil {
+		recordTraceError(span, err)
 		return Run{}, fmt.Errorf("create run: %w", err)
 	}
 
 	graph, err := buildGraph(resolvedWorkflow.Definition)
 	if err != nil {
+		recordTraceError(span, err)
 		return Run{}, err
 	}
 
-	return s.executeRun(ctx, run, graph, input, newExecutionState(graph.roots, len(resolvedWorkflow.Definition.Nodes)))
+	run, err = s.executeRun(ctx, run, graph, input, newExecutionState(graph.roots, len(resolvedWorkflow.Definition.Nodes)))
+	if err != nil {
+		recordTraceError(span, err)
+		return Run{}, err
+	}
+
+	span.SetAttributes(attribute.String("run.status", string(run.Status)))
+	return run, nil
 }
 
 func (s *Service) GetRun(ctx context.Context, tenantID, runID string) (Run, error) {
@@ -410,23 +431,35 @@ func (s *Service) ResumeApproval(ctx context.Context, tenantID, runID string, ap
 		return Run{}, ErrInvalidTenant
 	}
 
+	ctx, span := startTrace(ctx, "workflow.run.resume",
+		attribute.String("tenant.id", tenantID),
+		attribute.String("run.id", runID),
+		attribute.Bool("approval.approved", approved),
+	)
+	defer span.End()
+
 	run, steps, pending, err := s.repository.LoadPending(ctx, tenantID, runID)
 	if err != nil {
+		recordTraceError(span, err)
 		return Run{}, err
 	}
+	span.SetAttributes(attribute.String("workflow.id", run.WorkflowID))
 
 	resolvedWorkflow, err := s.workflows.Get(ctx, tenantID, run.WorkflowID)
 	if err != nil {
+		recordTraceError(span, err)
 		return Run{}, err
 	}
 
 	graph, err := buildGraph(resolvedWorkflow.Definition)
 	if err != nil {
+		recordTraceError(span, err)
 		return Run{}, err
 	}
 
 	run.Input = mergeInput(run.Input, input)
 	if len(steps) == 0 || steps[len(steps)-1].NodeID != pending.WaitingNodeID {
+		recordTraceError(span, ErrRunNotAwaitingReview)
 		return Run{}, ErrRunNotAwaitingReview
 	}
 
@@ -456,6 +489,7 @@ func (s *Service) ResumeApproval(ctx context.Context, tenantID, runID string, ap
 		}
 		run.CompletedAt = s.now()
 		if err := s.repository.CompleteRun(ctx, run, steps); err != nil {
+			recordTraceError(span, err)
 			return Run{}, fmt.Errorf("complete rejected run: %w", err)
 		}
 		s.recordAudit(ctx, tenantID, newRunAudit(run, "run_failed", run.Error, map[string]any{
@@ -463,6 +497,7 @@ func (s *Service) ResumeApproval(ctx context.Context, tenantID, runID string, ap
 			"approval":    approvalOutput,
 		}))
 
+		span.SetAttributes(attribute.String("run.status", string(run.Status)))
 		return run, nil
 	}
 
@@ -476,14 +511,26 @@ func (s *Service) ResumeApproval(ctx context.Context, tenantID, runID string, ap
 	run.Output = nil
 	run.CompletedAt = time.Time{}
 
-	return s.executeRun(ctx, run, graph, run.Input, state)
+	run, err = s.executeRun(ctx, run, graph, run.Input, state)
+	if err != nil {
+		recordTraceError(span, err)
+		return Run{}, err
+	}
+
+	span.SetAttributes(attribute.String("run.status", string(run.Status)))
+	return run, nil
 }
 
 func (s *Service) executeStep(ctx context.Context, runID, tenantID string, node workflow.Node, workflowInput map[string]any, stepOutputs map[string]any) (Step, any, error) {
+	ctx, span := startTrace(ctx, "workflow.step", nodeTraceAttributes(runID, tenantID, node)...)
+	defer span.End()
+
 	stepID, err := s.newID()
 	if err != nil {
+		recordTraceError(span, err)
 		return Step{}, nil, fmt.Errorf("generate step id: %w", err)
 	}
+	span.SetAttributes(attribute.String("step.id", stepID))
 
 	step := Step{
 		ID:        stepID,
@@ -501,10 +548,12 @@ func (s *Service) executeStep(ctx context.Context, runID, tenantID string, node 
 	if execErr != nil {
 		step.Status = StepStatusFailed
 		step.Error = execErr.Error()
+		recordTraceError(span, execErr)
 		return step, nil, execErr
 	}
 
 	step.Output = output
+	span.SetAttributes(attribute.String("step.status", string(step.Status)))
 	return step, output, nil
 }
 

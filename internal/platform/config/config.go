@@ -14,6 +14,7 @@ type Config struct {
 	HTTP            HTTPConfig
 	Auth            AuthConfig
 	Limits          LimitsConfig
+	Observability   ObservabilityConfig
 	Storage         StorageConfig
 	Dependencies    DependencyConfig
 	ShutdownTimeout time.Duration
@@ -40,6 +41,11 @@ type StorageConfig struct {
 type LimitsConfig struct {
 	TenantExecuteLimit  int
 	TenantExecuteWindow time.Duration
+}
+
+type ObservabilityConfig struct {
+	Exporter    string
+	SampleRatio float64
 }
 
 func Load(defaultServiceName string) (Config, error) {
@@ -100,6 +106,10 @@ func Load(defaultServiceName string) (Config, error) {
 			TenantExecuteLimit:  intEnv("TENANT_EXECUTE_LIMIT", 20),
 			TenantExecuteWindow: executeWindow,
 		},
+		Observability: ObservabilityConfig{
+			Exporter:    stringEnv("OTEL_EXPORTER", "none"),
+			SampleRatio: floatEnv("OTEL_SAMPLE_RATIO", 1.0),
+		},
 		Auth:            authConfig,
 		ShutdownTimeout: shutdownTimeout,
 	}, nil
@@ -134,6 +144,20 @@ func intEnv(key string, fallback int) int {
 	}
 
 	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+
+	return parsed
+}
+
+func floatEnv(key string, fallback float64) float64 {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		return fallback
 	}

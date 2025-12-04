@@ -16,6 +16,7 @@ import (
 	"workflow/internal/platform/config"
 	"workflow/internal/platform/health"
 	"workflow/internal/platform/logging"
+	"workflow/internal/platform/observability"
 	"workflow/internal/tenant"
 	appworker "workflow/internal/worker"
 	"workflow/internal/workflow"
@@ -28,6 +29,16 @@ func main() {
 	}
 
 	logger := logging.New(cfg.ServiceName, cfg.AppEnv)
+	shutdownObservability, err := observability.Setup(context.Background(), cfg)
+	if err != nil {
+		logger.Error("failed to initialize observability", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := shutdownObservability(context.Background()); err != nil {
+			logger.Error("failed to shut down observability", "error", err)
+		}
+	}()
 	healthService := health.NewService(
 		cfg.ServiceName,
 		cfg.Dependencies.ReadinessTimeout,
@@ -93,6 +104,12 @@ func main() {
 		logger.Error("failed to shut down api server cleanly", "error", err)
 		os.Exit(1)
 	}
+
+	if err := shutdownObservability(shutdownCtx); err != nil {
+		logger.Error("failed to flush observability", "error", err)
+		os.Exit(1)
+	}
+	shutdownObservability = func(context.Context) error { return nil }
 
 	logger.Info("api server stopped")
 }

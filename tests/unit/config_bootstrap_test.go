@@ -30,3 +30,20 @@ func TestLoadRejectsMalformedBootstrapAPIKeys(t *testing.T) {
 		t.Fatal("expected malformed bootstrap auth config to fail")
 	}
 }
+
+func TestLoadParsesObservabilityConfig(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER", "stdout")
+	t.Setenv("OTEL_SAMPLE_RATIO", "0.25")
+
+	cfg, err := config.Load("workflow-api")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.Observability.Exporter != "stdout" {
+		t.Fatalf("expected stdout exporter, got %q", cfg.Observability.Exporter)
+	}
+	if cfg.Observability.SampleRatio != 0.25 {
+		t.Fatalf("expected sample ratio 0.25, got %v", cfg.Observability.SampleRatio)
+	}
+}
