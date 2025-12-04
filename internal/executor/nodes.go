@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"workflow/internal/documents"
+	"workflow/internal/platform/egress"
 )
 
 func (s *Service) executeRetrieval(ctx context.Context, tenantID string, config map[string]any, workflowInput map[string]any) (any, error) {
@@ -99,8 +100,8 @@ func (s *Service) executeLLM(ctx context.Context, config map[string]any, workflo
 
 func (s *Service) executeHTTPTool(ctx context.Context, config map[string]any, workflowInput map[string]any, stepOutputs map[string]any) (any, error) {
 	url := stringConfig(config, "url", "")
-	if url == "" {
-		return nil, errors.New("http_tool requires url")
+	if err := egress.ValidateHTTPToolURL(url); err != nil {
+		return nil, err
 	}
 
 	method := strings.ToUpper(stringConfig(config, "method", http.MethodPost))

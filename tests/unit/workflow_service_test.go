@@ -95,6 +95,28 @@ func TestValidateDefinitionRejectsHTTPToolWithoutURL(t *testing.T) {
 	}
 }
 
+func TestValidateDefinitionRejectsUnsafeHTTPToolTarget(t *testing.T) {
+	t.Parallel()
+
+	result := workflow.ValidateDefinition(workflow.Definition{
+		Name:    "tool-flow",
+		Version: 1,
+		Nodes: []workflow.Node{
+			{ID: "notify", Type: "http_tool", Config: map[string]any{"url": "http://127.0.0.1:8080/admin", "method": "POST"}},
+		},
+	})
+
+	if result.Valid {
+		t.Fatal("expected invalid http tool workflow")
+	}
+	if len(result.Errors) == 0 {
+		t.Fatal("expected validation errors")
+	}
+	if result.Errors[0].Field != "nodes[0].config.url" {
+		t.Fatalf("expected url validation error, got %+v", result.Errors[0])
+	}
+}
+
 func TestCreateRejectsInvalidWorkflow(t *testing.T) {
 	t.Parallel()
 

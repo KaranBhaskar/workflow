@@ -19,6 +19,11 @@ import (
 	"workflow/internal/workflow"
 )
 
+const (
+	exampleTenantAKey = "example-key-tenant-a"
+	exampleTenantBKey = "example-key-tenant-b"
+)
+
 type stubHTTPClient func(*http.Request) (*http.Response, error)
 
 func (f stubHTTPClient) Do(req *http.Request) (*http.Response, error) {
@@ -66,14 +71,14 @@ func newTestAppWithOptions(t *testing.T, options testAppOptions) testApp {
 			ID:        "key-a",
 			TenantID:  "tenant-a",
 			Label:     "bootstrap",
-			Plaintext: "dev-key-tenant-a",
+			Plaintext: exampleTenantAKey,
 			Status:    auth.StatusActive,
 		},
 		{
 			ID:        "key-b",
 			TenantID:  "tenant-b",
 			Label:     "bootstrap",
-			Plaintext: "dev-key-tenant-b",
+			Plaintext: exampleTenantBKey,
 			Status:    auth.StatusActive,
 		},
 	}), tenantService)

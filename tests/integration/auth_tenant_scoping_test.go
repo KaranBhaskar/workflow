@@ -51,7 +51,7 @@ func TestTenantEndpointScopesIdentityByAPIKey(t *testing.T) {
 		t.Parallel()
 
 		req := httptest.NewRequest(http.MethodGet, "/v1/tenants/me", nil)
-		req.Header.Set("X-API-Key", "dev-key-tenant-a")
+		req.Header.Set("X-API-Key", exampleTenantAKey)
 		recorder := httptest.NewRecorder()
 
 		handler.ServeHTTP(recorder, req)
@@ -85,7 +85,7 @@ func TestTenantEndpointScopesIdentityByAPIKey(t *testing.T) {
 		t.Parallel()
 
 		req := httptest.NewRequest(http.MethodGet, "/v1/tenants/me", nil)
-		req.Header.Set("X-API-Key", "dev-key-tenant-b")
+		req.Header.Set("X-API-Key", exampleTenantBKey)
 		recorder := httptest.NewRecorder()
 
 		handler.ServeHTTP(recorder, req)
@@ -116,7 +116,7 @@ func TestTenantEndpointMethodNotAllowed(t *testing.T) {
 
 	handler := newAuthenticatedHandler(t)
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/me", nil)
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, req)

@@ -39,7 +39,7 @@ func TestWorkerProcessesAsyncJob(t *testing.T) {
 		Version: 1,
 		Nodes: []workflow.Node{
 			{ID: "retrieve", Type: "retrieve_documents", Config: map[string]any{"document_ids": []string{document.ID}, "query_input_key": "query", "limit": 1}},
-			{ID: "notify", Type: "http_tool", Config: map[string]any{"url": "https://tools.local/notify", "method": "POST", "input_key": "query"}},
+			{ID: "notify", Type: "http_tool", Config: map[string]any{"url": "https://api.example.com/notify", "method": "POST", "input_key": "query"}},
 		},
 		Edges: []workflow.Edge{
 			{From: "retrieve", To: "notify"},
@@ -122,7 +122,7 @@ func TestWorkerRetriesFailedAsyncJob(t *testing.T) {
 		Name:    "retry-flow",
 		Version: 1,
 		Nodes: []workflow.Node{
-			{ID: "notify", Type: "http_tool", Config: map[string]any{"url": "https://tools.local/retry", "method": "POST", "input_key": "message"}},
+			{ID: "notify", Type: "http_tool", Config: map[string]any{"url": "https://api.example.com/retry", "method": "POST", "input_key": "message"}},
 		},
 	})
 	if err != nil {

@@ -27,7 +27,7 @@ func TestCreateWorkflowAndValidate(t *testing.T) {
 		]
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/workflows", requestBody)
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, req)
@@ -64,7 +64,7 @@ func TestCreateWorkflowAndValidate(t *testing.T) {
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/v1/workflows/"+createPayload.Workflow.ID, nil)
-	getReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	getReq.Header.Set("X-API-Key", exampleTenantAKey)
 	getRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(getRecorder, getReq)
 	getResp := getRecorder.Result()
@@ -75,7 +75,7 @@ func TestCreateWorkflowAndValidate(t *testing.T) {
 	}
 
 	validateReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+createPayload.Workflow.ID+"/validate", nil)
-	validateReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	validateReq.Header.Set("X-API-Key", exampleTenantAKey)
 	validateRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(validateRecorder, validateReq)
 	validateResp := validateRecorder.Result()
@@ -109,7 +109,7 @@ func TestCreateWorkflowRejectsInvalidDefinition(t *testing.T) {
 		"nodes":[{"id":"duplicate","type":"llm"},{"id":"duplicate","type":"unknown"}],
 		"edges":[{"from":"duplicate","to":"missing"}]
 	}`))
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, req)
@@ -150,7 +150,7 @@ func TestWorkflowLookupIsTenantScoped(t *testing.T) {
 		"nodes":[{"id":"retrieve","type":"retrieve_documents"}],
 		"edges":[]
 	}`))
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, req)
@@ -171,7 +171,7 @@ func TestWorkflowLookupIsTenantScoped(t *testing.T) {
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/v1/workflows/"+payload.Workflow.ID, nil)
-	getReq.Header.Set("X-API-Key", "dev-key-tenant-b")
+	getReq.Header.Set("X-API-Key", exampleTenantBKey)
 	getRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(getRecorder, getReq)
 	getResp := getRecorder.Result()

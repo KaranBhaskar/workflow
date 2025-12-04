@@ -21,7 +21,7 @@ func TestAsyncWorkflowExecution(t *testing.T) {
 		"mode":"async",
 		"input":{"query":"queue worker"}
 	}`))
-	executeReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	executeReq.Header.Set("X-API-Key", exampleTenantAKey)
 	executeRecorder := httptest.NewRecorder()
 	app.Handler.ServeHTTP(executeRecorder, executeReq)
 	executeResp := executeRecorder.Result()
@@ -47,7 +47,7 @@ func TestAsyncWorkflowExecution(t *testing.T) {
 	drainAsyncJob(t, app)
 
 	runReq := httptest.NewRequest(http.MethodGet, "/v1/workflow-runs/"+executePayload.Run.ID, nil)
-	runReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	runReq.Header.Set("X-API-Key", exampleTenantAKey)
 	runRecorder := httptest.NewRecorder()
 	app.Handler.ServeHTTP(runRecorder, runReq)
 	runResp := runRecorder.Result()
@@ -70,7 +70,7 @@ func TestAsyncWorkflowExecution(t *testing.T) {
 	}
 
 	stepsReq := httptest.NewRequest(http.MethodGet, "/v1/workflow-runs/"+executePayload.Run.ID+"/steps", nil)
-	stepsReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	stepsReq.Header.Set("X-API-Key", exampleTenantAKey)
 	stepsRecorder := httptest.NewRecorder()
 	app.Handler.ServeHTTP(stepsRecorder, stepsReq)
 	stepsResp := stepsRecorder.Result()
@@ -109,10 +109,10 @@ func TestAsyncWorkflowRetriesAndDeadLettersFailures(t *testing.T) {
 		"name":"failing-async-flow",
 		"version":1,
 		"nodes":[
-			{"id":"notify","type":"http_tool","config":{"url":"https://tools.local/fail","method":"POST","input_key":"message"}}
+			{"id":"notify","type":"http_tool","config":{"url":"https://api.example.com/fail","method":"POST","input_key":"message"}}
 		]
 	}`))
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 	app.Handler.ServeHTTP(recorder, req)
 	resp := recorder.Result()
@@ -135,7 +135,7 @@ func TestAsyncWorkflowRetriesAndDeadLettersFailures(t *testing.T) {
 		"mode":"async",
 		"input":{"message":"retry me"}
 	}`))
-	executeReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	executeReq.Header.Set("X-API-Key", exampleTenantAKey)
 	executeRecorder := httptest.NewRecorder()
 	app.Handler.ServeHTTP(executeRecorder, executeReq)
 	executeResp := executeRecorder.Result()
@@ -159,7 +159,7 @@ func TestAsyncWorkflowRetriesAndDeadLettersFailures(t *testing.T) {
 	}
 
 	runReq := httptest.NewRequest(http.MethodGet, "/v1/workflow-runs/"+executePayload.Run.ID, nil)
-	runReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	runReq.Header.Set("X-API-Key", exampleTenantAKey)
 	runRecorder := httptest.NewRecorder()
 	app.Handler.ServeHTTP(runRecorder, runReq)
 	runResp := runRecorder.Result()
@@ -186,7 +186,7 @@ func TestAsyncWorkflowRetriesAndDeadLettersFailures(t *testing.T) {
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/v1/workflow-runs?status=dead_letter", nil)
-	listReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	listReq.Header.Set("X-API-Key", exampleTenantAKey)
 	listRecorder := httptest.NewRecorder()
 	app.Handler.ServeHTTP(listRecorder, listReq)
 	listResp := listRecorder.Result()

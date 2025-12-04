@@ -23,7 +23,7 @@ func TestApprovalWorkflowResume(t *testing.T) {
 			{"from":"review","to":"audit"}
 		]
 	}`))
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	resp := recorder.Result()
@@ -43,7 +43,7 @@ func TestApprovalWorkflowResume(t *testing.T) {
 	}
 
 	execReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+createPayload.Workflow.ID+"/execute", bytes.NewBufferString(`{"mode":"sync"}`))
-	execReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	execReq.Header.Set("X-API-Key", exampleTenantAKey)
 	execRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(execRecorder, execReq)
 	execResp := execRecorder.Result()
@@ -70,7 +70,7 @@ func TestApprovalWorkflowResume(t *testing.T) {
 		"approved":true,
 		"comment":"ship it"
 	}`))
-	resumeReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	resumeReq.Header.Set("X-API-Key", exampleTenantAKey)
 	resumeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(resumeRecorder, resumeReq)
 	resumeResp := resumeRecorder.Result()
@@ -93,7 +93,7 @@ func TestApprovalWorkflowResume(t *testing.T) {
 	}
 
 	stepsReq := httptest.NewRequest(http.MethodGet, "/v1/workflow-runs/"+executePayload.Run.ID+"/steps", nil)
-	stepsReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	stepsReq.Header.Set("X-API-Key", exampleTenantAKey)
 	stepsRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(stepsRecorder, stepsReq)
 	stepsResp := stepsRecorder.Result()

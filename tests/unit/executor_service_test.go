@@ -237,7 +237,7 @@ func TestExecuteSyncCallsHTTPToolNode(t *testing.T) {
 		Name:    "tool-flow",
 		Version: 1,
 		Nodes: []workflow.Node{
-			{ID: "notify", Type: "http_tool", Config: map[string]any{"url": "https://tools.local/notify", "method": "POST", "input_key": "ticket"}},
+			{ID: "notify", Type: "http_tool", Config: map[string]any{"url": "https://api.example.com/notify", "method": "POST", "input_key": "ticket"}},
 		},
 	})
 	if err != nil {
@@ -281,6 +281,59 @@ func TestExecuteSyncCallsHTTPToolNode(t *testing.T) {
 	}
 	if body["received"] != "INC-42" {
 		t.Fatalf("expected received INC-42, got %#v", body["received"])
+	}
+}
+
+func TestExecuteSyncRejectsUnsafeHTTPToolTargetAtRuntime(t *testing.T) {
+	t.Parallel()
+
+	documentService := documents.NewService(
+		documents.NewMemoryRepository(),
+		documents.NewLocalObjectStore(t.TempDir()),
+	)
+	repository := workflow.NewMemoryRepository()
+	unsafeWorkflow := workflow.Workflow{
+		ID:               "wf-unsafe",
+		TenantID:         "tenant-a",
+		Name:             "unsafe-tool-flow",
+		Version:          1,
+		Status:           workflow.StatusDraft,
+		ValidationStatus: workflow.ValidationStatusValid,
+		Definition: workflow.Definition{
+			Name:    "unsafe-tool-flow",
+			Version: 1,
+			Nodes: []workflow.Node{
+				{ID: "notify", Type: "http_tool", Config: map[string]any{"url": "http://127.0.0.1:8080/admin", "method": "POST"}},
+			},
+		},
+	}
+	if err := repository.Create(context.Background(), unsafeWorkflow); err != nil {
+		t.Fatalf("seed unsafe workflow: %v", err)
+	}
+
+	httpClientCalled := false
+	executorService := executor.NewService(
+		executor.NewMemoryRepository(),
+		workflow.NewService(repository),
+		documentService,
+		executor.NewMockLLMProvider(),
+	).WithHTTPClient(stubHTTPClient(func(req *http.Request) (*http.Response, error) {
+		httpClientCalled = true
+		return nil, nil
+	}))
+
+	run, err := executorService.ExecuteSync(context.Background(), "tenant-a", unsafeWorkflow.ID, nil)
+	if err != nil {
+		t.Fatalf("execute workflow: %v", err)
+	}
+	if run.Status != executor.RunStatusFailed {
+		t.Fatalf("expected failed run, got %q", run.Status)
+	}
+	if !strings.Contains(run.Error, "not allowed") {
+		t.Fatalf("expected unsafe target error, got %q", run.Error)
+	}
+	if httpClientCalled {
+		t.Fatal("expected unsafe target to be rejected before issuing an HTTP request")
 	}
 }
 

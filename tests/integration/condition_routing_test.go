@@ -25,7 +25,7 @@ func TestConditionWorkflowRoutesSelectedBranch(t *testing.T) {
 			{"from":"route","to":"low","condition":"false"}
 		]
 	}`))
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	resp := recorder.Result()
@@ -48,7 +48,7 @@ func TestConditionWorkflowRoutesSelectedBranch(t *testing.T) {
 		"mode":"sync",
 		"input":{"severity":"high"}
 	}`))
-	execReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	execReq.Header.Set("X-API-Key", exampleTenantAKey)
 	execRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(execRecorder, execReq)
 	execResp := execRecorder.Result()
@@ -68,7 +68,7 @@ func TestConditionWorkflowRoutesSelectedBranch(t *testing.T) {
 	}
 
 	stepsReq := httptest.NewRequest(http.MethodGet, "/v1/workflow-runs/"+runPayload.Run.ID+"/steps", nil)
-	stepsReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	stepsReq.Header.Set("X-API-Key", exampleTenantAKey)
 	stepsRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(stepsRecorder, stepsReq)
 	stepsResp := stepsRecorder.Result()

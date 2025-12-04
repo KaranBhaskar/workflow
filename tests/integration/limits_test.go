@@ -21,7 +21,7 @@ func TestWorkflowExecuteReplaysIdempotencyKey(t *testing.T) {
 		"mode":"sync",
 		"input":{"query":"backend"}
 	}`))
-	firstReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	firstReq.Header.Set("X-API-Key", exampleTenantAKey)
 	firstReq.Header.Set("Idempotency-Key", "idem-sync-1")
 	firstRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(firstRecorder, firstReq)
@@ -45,7 +45,7 @@ func TestWorkflowExecuteReplaysIdempotencyKey(t *testing.T) {
 		"mode":"sync",
 		"input":{"query":"backend"}
 	}`))
-	secondReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	secondReq.Header.Set("X-API-Key", exampleTenantAKey)
 	secondReq.Header.Set("Idempotency-Key", "idem-sync-1")
 	secondRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(secondRecorder, secondReq)
@@ -83,7 +83,7 @@ func TestWorkflowExecuteRejectsIdempotencyMismatch(t *testing.T) {
 		"mode":"sync",
 		"input":{"query":"first"}
 	}`))
-	firstReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	firstReq.Header.Set("X-API-Key", exampleTenantAKey)
 	firstReq.Header.Set("Idempotency-Key", "idem-sync-2")
 	firstRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(firstRecorder, firstReq)
@@ -98,7 +98,7 @@ func TestWorkflowExecuteRejectsIdempotencyMismatch(t *testing.T) {
 		"mode":"sync",
 		"input":{"query":"second"}
 	}`))
-	secondReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	secondReq.Header.Set("X-API-Key", exampleTenantAKey)
 	secondReq.Header.Set("Idempotency-Key", "idem-sync-2")
 	secondRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(secondRecorder, secondReq)
@@ -117,11 +117,11 @@ func TestWorkflowExecuteRateLimitsPerTenant(t *testing.T) {
 		TriggerLimit:  1,
 		TriggerWindow: time.Minute,
 	})
-	tenantAWorkflow := createSingleNodeWorkflow(t, app.Handler, "dev-key-tenant-a", "tenant-a-flow")
-	tenantBWorkflow := createSingleNodeWorkflow(t, app.Handler, "dev-key-tenant-b", "tenant-b-flow")
+	tenantAWorkflow := createSingleNodeWorkflow(t, app.Handler, exampleTenantAKey, "tenant-a-flow")
+	tenantBWorkflow := createSingleNodeWorkflow(t, app.Handler, exampleTenantBKey, "tenant-b-flow")
 
 	firstReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+tenantAWorkflow+"/execute", bytes.NewBufferString(`{"mode":"sync"}`))
-	firstReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	firstReq.Header.Set("X-API-Key", exampleTenantAKey)
 	firstRecorder := httptest.NewRecorder()
 	app.Handler.ServeHTTP(firstRecorder, firstReq)
 	firstResp := firstRecorder.Result()
@@ -135,7 +135,7 @@ func TestWorkflowExecuteRateLimitsPerTenant(t *testing.T) {
 	}
 
 	secondReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+tenantAWorkflow+"/execute", bytes.NewBufferString(`{"mode":"sync"}`))
-	secondReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	secondReq.Header.Set("X-API-Key", exampleTenantAKey)
 	secondRecorder := httptest.NewRecorder()
 	app.Handler.ServeHTTP(secondRecorder, secondReq)
 	secondResp := secondRecorder.Result()
@@ -146,7 +146,7 @@ func TestWorkflowExecuteRateLimitsPerTenant(t *testing.T) {
 	}
 
 	tenantBReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+tenantBWorkflow+"/execute", bytes.NewBufferString(`{"mode":"sync"}`))
-	tenantBReq.Header.Set("X-API-Key", "dev-key-tenant-b")
+	tenantBReq.Header.Set("X-API-Key", exampleTenantBKey)
 	tenantBRecorder := httptest.NewRecorder()
 	app.Handler.ServeHTTP(tenantBRecorder, tenantBReq)
 	tenantBResp := tenantBRecorder.Result()

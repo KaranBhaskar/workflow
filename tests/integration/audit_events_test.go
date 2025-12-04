@@ -19,7 +19,7 @@ func TestWorkflowRunEventsExposeAuditTrail(t *testing.T) {
 		"mode":"sync",
 		"input":{"query":"audit trail"}
 	}`))
-	executeReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	executeReq.Header.Set("X-API-Key", exampleTenantAKey)
 	executeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(executeRecorder, executeReq)
 	executeResp := executeRecorder.Result()
@@ -39,7 +39,7 @@ func TestWorkflowRunEventsExposeAuditTrail(t *testing.T) {
 	}
 
 	eventsReq := httptest.NewRequest(http.MethodGet, "/v1/workflow-runs/"+executePayload.Run.ID+"/events", nil)
-	eventsReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	eventsReq.Header.Set("X-API-Key", exampleTenantAKey)
 	eventsRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(eventsRecorder, eventsReq)
 	eventsResp := eventsRecorder.Result()

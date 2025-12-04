@@ -31,10 +31,10 @@ func TestHTTPToolWorkflowExecution(t *testing.T) {
 		"name":"tool-flow",
 		"version":1,
 		"nodes":[
-			{"id":"notify","type":"http_tool","config":{"url":"https://tools.local/notify","method":"POST","input_key":"ticket"}}
+			{"id":"notify","type":"http_tool","config":{"url":"https://api.example.com/notify","method":"POST","input_key":"ticket"}}
 		]
 	}`))
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	resp := recorder.Result()
@@ -57,7 +57,7 @@ func TestHTTPToolWorkflowExecution(t *testing.T) {
 		"mode":"sync",
 		"input":{"ticket":"INC-9000"}
 	}`))
-	execReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	execReq.Header.Set("X-API-Key", exampleTenantAKey)
 	execRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(execRecorder, execReq)
 	execResp := execRecorder.Result()
@@ -81,7 +81,7 @@ func TestHTTPToolWorkflowExecution(t *testing.T) {
 	}
 
 	stepsReq := httptest.NewRequest(http.MethodGet, "/v1/workflow-runs/"+runPayload.Run.ID+"/steps", nil)
-	stepsReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	stepsReq.Header.Set("X-API-Key", exampleTenantAKey)
 	stepsRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(stepsRecorder, stepsReq)
 	stepsResp := stepsRecorder.Result()
@@ -114,5 +114,27 @@ func TestHTTPToolWorkflowExecution(t *testing.T) {
 	}
 	if body["received"] != "INC-9000" {
 		t.Fatalf("expected received INC-9000, got %#v", body["received"])
+	}
+}
+
+func TestHTTPToolWorkflowRejectsUnsafeTarget(t *testing.T) {
+	t.Parallel()
+
+	handler := newAuthenticatedHandler(t)
+	req := httptest.NewRequest(http.MethodPost, "/v1/workflows", bytes.NewBufferString(`{
+		"name":"tool-flow",
+		"version":1,
+		"nodes":[
+			{"id":"notify","type":"http_tool","config":{"url":"http://localhost:9000/admin","method":"POST"}}
+		]
+	}`))
+	req.Header.Set("X-API-Key", exampleTenantAKey)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	resp := recorder.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
 }

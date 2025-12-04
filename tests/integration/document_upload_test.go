@@ -17,7 +17,7 @@ func TestDocumentUploadCreatesTenantScopedMetadata(t *testing.T) {
 	body, contentType := multipartBody(t, "file", "notes.txt", []byte("hello from tenant a"))
 	req := httptest.NewRequest(http.MethodPost, "/v1/documents", body)
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, req)
@@ -74,7 +74,7 @@ func TestDocumentUploadCreatesTenantScopedMetadata(t *testing.T) {
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/v1/documents/"+payload.Document.ID, nil)
-	getReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	getReq.Header.Set("X-API-Key", exampleTenantAKey)
 	getRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(getRecorder, getReq)
 	getResp := getRecorder.Result()
@@ -92,7 +92,7 @@ func TestDocumentUploadCreatesChunks(t *testing.T) {
 	body, contentType := multipartBody(t, "file", "long.txt", []byte(strings.Repeat("chunk words ", 120)))
 	req := httptest.NewRequest(http.MethodPost, "/v1/documents", body)
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, req)
@@ -114,7 +114,7 @@ func TestDocumentUploadCreatesChunks(t *testing.T) {
 	}
 
 	chunksReq := httptest.NewRequest(http.MethodGet, "/v1/documents/"+payload.Document.ID+"/chunks", nil)
-	chunksReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	chunksReq.Header.Set("X-API-Key", exampleTenantAKey)
 	chunksRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(chunksRecorder, chunksReq)
 	chunksResp := chunksRecorder.Result()
@@ -156,7 +156,7 @@ func TestDocumentUploadIsTenantScoped(t *testing.T) {
 	body, contentType := multipartBody(t, "file", "tenant-a.txt", []byte("tenant a secret"))
 	createReq := httptest.NewRequest(http.MethodPost, "/v1/documents", body)
 	createReq.Header.Set("Content-Type", contentType)
-	createReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	createReq.Header.Set("X-API-Key", exampleTenantAKey)
 	createRecorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(createRecorder, createReq)
@@ -177,7 +177,7 @@ func TestDocumentUploadIsTenantScoped(t *testing.T) {
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/v1/documents/"+payload.Document.ID, nil)
-	getReq.Header.Set("X-API-Key", "dev-key-tenant-b")
+	getReq.Header.Set("X-API-Key", exampleTenantBKey)
 	getRecorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(getRecorder, getReq)
@@ -189,7 +189,7 @@ func TestDocumentUploadIsTenantScoped(t *testing.T) {
 	}
 
 	chunksReq := httptest.NewRequest(http.MethodGet, "/v1/documents/"+payload.Document.ID+"/chunks", nil)
-	chunksReq.Header.Set("X-API-Key", "dev-key-tenant-b")
+	chunksReq.Header.Set("X-API-Key", exampleTenantBKey)
 	chunksRecorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(chunksRecorder, chunksReq)
@@ -207,7 +207,7 @@ func TestDocumentUploadRequiresMultipartFile(t *testing.T) {
 	handler := newAuthenticatedHandler(t)
 	req := httptest.NewRequest(http.MethodPost, "/v1/documents", bytes.NewBufferString("not-multipart"))
 	req.Header.Set("Content-Type", "text/plain")
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, req)

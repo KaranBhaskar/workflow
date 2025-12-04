@@ -21,7 +21,7 @@ func TestSyncWorkflowExecution(t *testing.T) {
 		"input":{"query":"backend orchestration"},
 		"options":{"timeout_ms":500}
 	}`))
-	executeReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	executeReq.Header.Set("X-API-Key", exampleTenantAKey)
 	executeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(executeRecorder, executeReq)
 	executeResp := executeRecorder.Result()
@@ -59,7 +59,7 @@ func TestSyncWorkflowExecution(t *testing.T) {
 	}
 
 	runReq := httptest.NewRequest(http.MethodGet, "/v1/workflow-runs/"+executePayload.Run.ID, nil)
-	runReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	runReq.Header.Set("X-API-Key", exampleTenantAKey)
 	runRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(runRecorder, runReq)
 	runResp := runRecorder.Result()
@@ -70,7 +70,7 @@ func TestSyncWorkflowExecution(t *testing.T) {
 	}
 
 	stepsReq := httptest.NewRequest(http.MethodGet, "/v1/workflow-runs/"+executePayload.Run.ID+"/steps", nil)
-	stepsReq.Header.Set("X-API-Key", "dev-key-tenant-a")
+	stepsReq.Header.Set("X-API-Key", exampleTenantAKey)
 	stepsRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(stepsRecorder, stepsReq)
 	stepsResp := stepsRecorder.Result()
@@ -105,7 +105,7 @@ func TestExecutionRejectsUnknownMode(t *testing.T) {
 	workflowID := createExecutionWorkflow(t, handler, uploadDocumentForExecution(t, handler, "doc.txt", []byte("hello workflow execution")))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", bytes.NewBufferString(`{"mode":"later"}`))
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	resp := recorder.Result()
@@ -122,7 +122,7 @@ func uploadDocumentForExecution(t *testing.T, handler http.Handler, filename str
 	body, contentType := multipartBody(t, "file", filename, payload)
 	req := httptest.NewRequest(http.MethodPost, "/v1/documents", body)
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	resp := recorder.Result()
@@ -160,7 +160,7 @@ func createExecutionWorkflow(t *testing.T, handler http.Handler, documentID stri
 			{"from":"summarize","to":"audit"}
 		]
 	}`, documentID)))
-	req.Header.Set("X-API-Key", "dev-key-tenant-a")
+	req.Header.Set("X-API-Key", exampleTenantAKey)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	resp := recorder.Result()

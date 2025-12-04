@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"workflow/internal/platform/egress"
 	"workflow/internal/platform/ids"
 )
 
@@ -300,8 +301,8 @@ func validateNodeConfig(node Node, index int) []ValidationError {
 
 func validateHTTPToolNode(node Node, index int) []ValidationError {
 	errorsList := make([]ValidationError, 0, 2)
-	if strings.TrimSpace(anyString(node.Config["url"])) == "" {
-		errorsList = append(errorsList, ValidationError{Field: fmt.Sprintf("nodes[%d].config.url", index), Message: "http_tool url is required"})
+	if err := egress.ValidateHTTPToolURL(anyString(node.Config["url"])); err != nil {
+		errorsList = append(errorsList, ValidationError{Field: fmt.Sprintf("nodes[%d].config.url", index), Message: err.Error()})
 	}
 
 	method := strings.ToUpper(strings.TrimSpace(anyString(node.Config["method"])))
