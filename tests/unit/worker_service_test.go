@@ -1,16 +1,13 @@
 package unit_test
 
 import (
-	"bytes"
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"workflow/internal/documents"
 	"workflow/internal/executor"
 	appworker "workflow/internal/worker"
 	"workflow/internal/workflow"
@@ -20,21 +17,16 @@ func TestWorkerProcessesAsyncJob(t *testing.T) {
 	t.Parallel()
 
 	queue := appworker.NewMemoryQueue(8)
-	documentService := documents.NewService(
-		documents.NewMemoryRepository(),
-		documents.NewLocalObjectStore(t.TempDir()),
-	)
-	document, err := documentService.Create(context.Background(), "tenant-a", documents.CreateParams{
-		Filename:    "async.txt",
-		ContentType: "text/plain",
-		Content:     bytes.NewBufferString("async queue worker execution path"),
+	httpClient := stubHTTPClient(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"status":"ok"}`)),
+		}, nil
 	})
-	if err != nil {
-		t.Fatalf("create document: %v", err)
-	}
-
-	workflowService := workflow.NewService(workflow.NewMemoryRepository())
-	createdWorkflow, _, err := workflowService.Create(context.Background(), "tenant-a", workflow.Definition{
+	fixture := newExecutorFixture(t, withHTTPClient(httpClient), withJobQueue(queue))
+	document := fixture.createDocument(t, "tenant-a", "async.txt", "async queue worker execution path")
+	createdWorkflow := fixture.createWorkflow(t, "tenant-a", workflow.Definition{
 		Name:    "async-flow",
 		Version: 1,
 		Nodes: []workflow.Node{
@@ -45,25 +37,8 @@ func TestWorkerProcessesAsyncJob(t *testing.T) {
 			{From: "retrieve", To: "notify"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
 
-	httpClient := stubHTTPClient(func(req *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"status":"ok"}`)),
-		}, nil
-	})
-	executorService := executor.NewService(
-		executor.NewMemoryRepository(),
-		workflowService,
-		documentService,
-		executor.NewMockLLMProvider(),
-	).WithHTTPClient(httpClient).WithJobQueue(queue)
-
-	run, err := executorService.ExecuteAsync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"query": "worker"})
+	run, err := fixture.executor.ExecuteAsync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"query": "worker"})
 	if err != nil {
 		t.Fatalf("execute async: %v", err)
 	}
@@ -71,8 +46,7 @@ func TestWorkerProcessesAsyncJob(t *testing.T) {
 		t.Fatalf("expected queued run, got %q", run.Status)
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	workerService := appworker.NewService(logger, queue, executorService).WithPollTimeout(5 * time.Millisecond)
+	workerService := appworker.NewService(discardLogger(), queue, fixture.executor).WithPollTimeout(5 * time.Millisecond)
 
 	processed, err := workerService.ProcessNext(context.Background())
 	if err != nil {
@@ -82,7 +56,7 @@ func TestWorkerProcessesAsyncJob(t *testing.T) {
 		t.Fatal("expected worker to process a job")
 	}
 
-	resolvedRun, err := executorService.GetRun(context.Background(), "tenant-a", run.ID)
+	resolvedRun, err := fixture.executor.GetRun(context.Background(), "tenant-a", run.ID)
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}
@@ -95,12 +69,6 @@ func TestWorkerRetriesFailedAsyncJob(t *testing.T) {
 	t.Parallel()
 
 	queue := appworker.NewMemoryQueue(8)
-	workflowService := workflow.NewService(workflow.NewMemoryRepository())
-	documentService := documents.NewService(
-		documents.NewMemoryRepository(),
-		documents.NewLocalObjectStore(t.TempDir()),
-	)
-
 	attempts := 0
 	httpClient := stubHTTPClient(func(req *http.Request) (*http.Response, error) {
 		attempts++
@@ -118,31 +86,21 @@ func TestWorkerRetriesFailedAsyncJob(t *testing.T) {
 		}, nil
 	})
 
-	createdWorkflow, _, err := workflowService.Create(context.Background(), "tenant-a", workflow.Definition{
+	fixture := newExecutorFixture(t, withHTTPClient(httpClient), withJobQueue(queue))
+	createdWorkflow := fixture.createWorkflow(t, "tenant-a", workflow.Definition{
 		Name:    "retry-flow",
 		Version: 1,
 		Nodes: []workflow.Node{
 			{ID: "notify", Type: "http_tool", Config: map[string]any{"url": "https://api.example.com/retry", "method": "POST", "input_key": "message"}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
 
-	executorService := executor.NewService(
-		executor.NewMemoryRepository(),
-		workflowService,
-		documentService,
-		executor.NewMockLLMProvider(),
-	).WithHTTPClient(httpClient).WithJobQueue(queue)
-
-	run, err := executorService.ExecuteAsync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"message": "retry"})
+	run, err := fixture.executor.ExecuteAsync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"message": "retry"})
 	if err != nil {
 		t.Fatalf("execute async: %v", err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	workerService := appworker.NewService(logger, queue, executorService).WithPollTimeout(5 * time.Millisecond)
+	workerService := appworker.NewService(discardLogger(), queue, fixture.executor).WithPollTimeout(5 * time.Millisecond)
 
 	processed, err := workerService.ProcessNext(context.Background())
 	if err != nil {
@@ -162,7 +120,7 @@ func TestWorkerRetriesFailedAsyncJob(t *testing.T) {
 		t.Fatal("expected retried async job to process")
 	}
 
-	resolvedRun, err := executorService.GetRun(context.Background(), "tenant-a", run.ID)
+	resolvedRun, err := fixture.executor.GetRun(context.Background(), "tenant-a", run.ID)
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}

@@ -51,9 +51,14 @@ func main() {
 	)
 	triggerControl := tenant.NewTriggerControl(cfg.Limits.TenantExecuteLimit, cfg.Limits.TenantExecuteWindow)
 	auditService := audit.NewService(audit.NewMemoryRepository())
+	objectStore, err := buildObjectStore(cfg)
+	if err != nil {
+		logger.Error("failed to initialize object storage", "error", err)
+		os.Exit(1)
+	}
 	documentService := documents.NewService(
 		documents.NewMemoryRepository(),
-		documents.NewLocalObjectStore(cfg.Storage.ObjectDir),
+		objectStore,
 	)
 	workflowService := workflow.NewService(workflow.NewMemoryRepository())
 	jobQueue := buildJobQueue(cfg)
@@ -138,6 +143,20 @@ func buildJobQueue(cfg config.Config) executor.JobQueue {
 	}
 
 	return appworker.NewMemoryQueue(128)
+}
+
+func buildObjectStore(cfg config.Config) (documents.ObjectStore, error) {
+	if cfg.Storage.S3.Endpoint == "" {
+		return documents.NewLocalObjectStore(cfg.Storage.ObjectDir), nil
+	}
+
+	return documents.NewS3ObjectStore(
+		cfg.Storage.S3.Endpoint,
+		cfg.Storage.S3.AccessKey,
+		cfg.Storage.S3.SecretKey,
+		cfg.Storage.S3.Bucket,
+		cfg.Storage.S3.UseSSL,
+	)
 }
 
 func buildBootstrapTenants(entries []config.BootstrapAPIKey) []tenant.Tenant {

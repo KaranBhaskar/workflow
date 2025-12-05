@@ -2,10 +2,8 @@ package integration_test
 
 import (
 	"bytes"
-	"encoding/json"
 	"mime/multipart"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -14,19 +12,9 @@ func TestDocumentUploadCreatesTenantScopedMetadata(t *testing.T) {
 	t.Parallel()
 
 	handler := newAuthenticatedHandler(t)
-	body, contentType := multipartBody(t, "file", "notes.txt", []byte("hello from tenant a"))
-	req := httptest.NewRequest(http.MethodPost, "/v1/documents", body)
-	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("X-API-Key", exampleTenantAKey)
-	recorder := httptest.NewRecorder()
-
-	handler.ServeHTTP(recorder, req)
-	resp := recorder.Result()
+	resp := performRequest(handler, newAuthedMultipartRequest(t, "/v1/documents", exampleTenantAKey, "file", "notes.txt", []byte("hello from tenant a")))
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", resp.StatusCode)
-	}
+	expectStatus(t, resp, http.StatusCreated)
 
 	var payload struct {
 		Document struct {
@@ -41,9 +29,7 @@ func TestDocumentUploadCreatesTenantScopedMetadata(t *testing.T) {
 			ChunkCount  int    `json:"chunk_count"`
 		} `json:"document"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode upload response: %v", err)
-	}
+	decodeJSONResponse(t, resp, &payload)
 
 	if payload.Document.ID == "" {
 		t.Fatal("expected document id to be set")
@@ -73,35 +59,18 @@ func TestDocumentUploadCreatesTenantScopedMetadata(t *testing.T) {
 		t.Fatal("expected chunk_count to be populated")
 	}
 
-	getReq := httptest.NewRequest(http.MethodGet, "/v1/documents/"+payload.Document.ID, nil)
-	getReq.Header.Set("X-API-Key", exampleTenantAKey)
-	getRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(getRecorder, getReq)
-	getResp := getRecorder.Result()
+	getResp := performRequest(handler, newAuthedRequest(http.MethodGet, "/v1/documents/"+payload.Document.ID, exampleTenantAKey, nil))
 	defer getResp.Body.Close()
-
-	if getResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 when fetching uploaded document, got %d", getResp.StatusCode)
-	}
+	expectStatus(t, getResp, http.StatusOK)
 }
 
 func TestDocumentUploadCreatesChunks(t *testing.T) {
 	t.Parallel()
 
 	handler := newAuthenticatedHandler(t)
-	body, contentType := multipartBody(t, "file", "long.txt", []byte(strings.Repeat("chunk words ", 120)))
-	req := httptest.NewRequest(http.MethodPost, "/v1/documents", body)
-	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("X-API-Key", exampleTenantAKey)
-	recorder := httptest.NewRecorder()
-
-	handler.ServeHTTP(recorder, req)
-	resp := recorder.Result()
+	resp := performRequest(handler, newAuthedMultipartRequest(t, "/v1/documents", exampleTenantAKey, "file", "long.txt", []byte(strings.Repeat("chunk words ", 120))))
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", resp.StatusCode)
-	}
+	expectStatus(t, resp, http.StatusCreated)
 
 	var payload struct {
 		Document struct {
@@ -109,20 +78,11 @@ func TestDocumentUploadCreatesChunks(t *testing.T) {
 			ChunkCount int    `json:"chunk_count"`
 		} `json:"document"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode upload response: %v", err)
-	}
+	decodeJSONResponse(t, resp, &payload)
 
-	chunksReq := httptest.NewRequest(http.MethodGet, "/v1/documents/"+payload.Document.ID+"/chunks", nil)
-	chunksReq.Header.Set("X-API-Key", exampleTenantAKey)
-	chunksRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(chunksRecorder, chunksReq)
-	chunksResp := chunksRecorder.Result()
+	chunksResp := performRequest(handler, newAuthedRequest(http.MethodGet, "/v1/documents/"+payload.Document.ID+"/chunks", exampleTenantAKey, nil))
 	defer chunksResp.Body.Close()
-
-	if chunksResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 when fetching chunks, got %d", chunksResp.StatusCode)
-	}
+	expectStatus(t, chunksResp, http.StatusOK)
 
 	var chunksPayload struct {
 		Chunks []struct {
@@ -131,9 +91,7 @@ func TestDocumentUploadCreatesChunks(t *testing.T) {
 			TokenEstimate int    `json:"token_estimate"`
 		} `json:"chunks"`
 	}
-	if err := json.NewDecoder(chunksResp.Body).Decode(&chunksPayload); err != nil {
-		t.Fatalf("decode chunks response: %v", err)
-	}
+	decodeJSONResponse(t, chunksResp, &chunksPayload)
 
 	if len(chunksPayload.Chunks) != payload.Document.ChunkCount {
 		t.Fatalf("expected %d chunks, got %d", payload.Document.ChunkCount, len(chunksPayload.Chunks))
@@ -153,70 +111,36 @@ func TestDocumentUploadIsTenantScoped(t *testing.T) {
 	t.Parallel()
 
 	handler := newAuthenticatedHandler(t)
-	body, contentType := multipartBody(t, "file", "tenant-a.txt", []byte("tenant a secret"))
-	createReq := httptest.NewRequest(http.MethodPost, "/v1/documents", body)
-	createReq.Header.Set("Content-Type", contentType)
-	createReq.Header.Set("X-API-Key", exampleTenantAKey)
-	createRecorder := httptest.NewRecorder()
-
-	handler.ServeHTTP(createRecorder, createReq)
-	createResp := createRecorder.Result()
+	createResp := performRequest(handler, newAuthedMultipartRequest(t, "/v1/documents", exampleTenantAKey, "file", "tenant-a.txt", []byte("tenant a secret")))
 	defer createResp.Body.Close()
-
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", createResp.StatusCode)
-	}
+	expectStatus(t, createResp, http.StatusCreated)
 
 	var payload struct {
 		Document struct {
 			ID string `json:"id"`
 		} `json:"document"`
 	}
-	if err := json.NewDecoder(createResp.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode upload response: %v", err)
-	}
+	decodeJSONResponse(t, createResp, &payload)
 
-	getReq := httptest.NewRequest(http.MethodGet, "/v1/documents/"+payload.Document.ID, nil)
-	getReq.Header.Set("X-API-Key", exampleTenantBKey)
-	getRecorder := httptest.NewRecorder()
-
-	handler.ServeHTTP(getRecorder, getReq)
-	getResp := getRecorder.Result()
+	getResp := performRequest(handler, newAuthedRequest(http.MethodGet, "/v1/documents/"+payload.Document.ID, exampleTenantBKey, nil))
 	defer getResp.Body.Close()
+	expectStatus(t, getResp, http.StatusNotFound)
 
-	if getResp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404 for cross-tenant fetch, got %d", getResp.StatusCode)
-	}
-
-	chunksReq := httptest.NewRequest(http.MethodGet, "/v1/documents/"+payload.Document.ID+"/chunks", nil)
-	chunksReq.Header.Set("X-API-Key", exampleTenantBKey)
-	chunksRecorder := httptest.NewRecorder()
-
-	handler.ServeHTTP(chunksRecorder, chunksReq)
-	chunksResp := chunksRecorder.Result()
+	chunksResp := performRequest(handler, newAuthedRequest(http.MethodGet, "/v1/documents/"+payload.Document.ID+"/chunks", exampleTenantBKey, nil))
 	defer chunksResp.Body.Close()
-
-	if chunksResp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404 for cross-tenant chunk fetch, got %d", chunksResp.StatusCode)
-	}
+	expectStatus(t, chunksResp, http.StatusNotFound)
 }
 
 func TestDocumentUploadRequiresMultipartFile(t *testing.T) {
 	t.Parallel()
 
 	handler := newAuthenticatedHandler(t)
-	req := httptest.NewRequest(http.MethodPost, "/v1/documents", bytes.NewBufferString("not-multipart"))
-	req.Header.Set("Content-Type", "text/plain")
-	req.Header.Set("X-API-Key", exampleTenantAKey)
-	recorder := httptest.NewRecorder()
-
-	handler.ServeHTTP(recorder, req)
-	resp := recorder.Result()
+	resp := performRequest(handler, newRequest(http.MethodPost, "/v1/documents", strings.NewReader("not-multipart"), map[string]string{
+		"Content-Type": "text/plain",
+		"X-API-Key":    exampleTenantAKey,
+	}))
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", resp.StatusCode)
-	}
+	expectStatus(t, resp, http.StatusBadRequest)
 }
 
 func multipartBody(t *testing.T, fieldName, filename string, payload []byte) (*bytes.Buffer, string) {

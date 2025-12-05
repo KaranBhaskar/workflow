@@ -1,11 +1,8 @@
 package integration_test
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -16,20 +13,13 @@ func TestSyncWorkflowExecution(t *testing.T) {
 	documentID := uploadDocumentForExecution(t, handler, "design.txt", []byte("workflow architecture backend reliability orchestration platform"))
 	workflowID := createExecutionWorkflow(t, handler, documentID)
 
-	executeReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", bytes.NewBufferString(`{
+	executeResp := performRequest(handler, newAuthedJSONRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", exampleTenantAKey, `{
 		"mode":"sync",
 		"input":{"query":"backend orchestration"},
 		"options":{"timeout_ms":500}
 	}`))
-	executeReq.Header.Set("X-API-Key", exampleTenantAKey)
-	executeRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(executeRecorder, executeReq)
-	executeResp := executeRecorder.Result()
 	defer executeResp.Body.Close()
-
-	if executeResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", executeResp.StatusCode)
-	}
+	expectStatus(t, executeResp, http.StatusOK)
 
 	var executePayload struct {
 		Run struct {
@@ -41,9 +31,7 @@ func TestSyncWorkflowExecution(t *testing.T) {
 			} `json:"output"`
 		} `json:"run"`
 	}
-	if err := json.NewDecoder(executeResp.Body).Decode(&executePayload); err != nil {
-		t.Fatalf("decode execute response: %v", err)
-	}
+	decodeJSONResponse(t, executeResp, &executePayload)
 
 	if executePayload.Run.ID == "" {
 		t.Fatal("expected run id")
@@ -58,27 +46,13 @@ func TestSyncWorkflowExecution(t *testing.T) {
 		t.Fatalf("expected last node audit, got %q", executePayload.Run.Output.LastNode)
 	}
 
-	runReq := httptest.NewRequest(http.MethodGet, "/v1/workflow-runs/"+executePayload.Run.ID, nil)
-	runReq.Header.Set("X-API-Key", exampleTenantAKey)
-	runRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(runRecorder, runReq)
-	runResp := runRecorder.Result()
+	runResp := performRequest(handler, newAuthedRequest(http.MethodGet, "/v1/workflow-runs/"+executePayload.Run.ID, exampleTenantAKey, nil))
 	defer runResp.Body.Close()
+	expectStatus(t, runResp, http.StatusOK)
 
-	if runResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 when fetching run, got %d", runResp.StatusCode)
-	}
-
-	stepsReq := httptest.NewRequest(http.MethodGet, "/v1/workflow-runs/"+executePayload.Run.ID+"/steps", nil)
-	stepsReq.Header.Set("X-API-Key", exampleTenantAKey)
-	stepsRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(stepsRecorder, stepsReq)
-	stepsResp := stepsRecorder.Result()
+	stepsResp := performRequest(handler, newAuthedRequest(http.MethodGet, "/v1/workflow-runs/"+executePayload.Run.ID+"/steps", exampleTenantAKey, nil))
 	defer stepsResp.Body.Close()
-
-	if stepsResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 when fetching steps, got %d", stepsResp.StatusCode)
-	}
+	expectStatus(t, stepsResp, http.StatusOK)
 
 	var stepsPayload struct {
 		Steps []struct {
@@ -86,9 +60,7 @@ func TestSyncWorkflowExecution(t *testing.T) {
 			Status string `json:"status"`
 		} `json:"steps"`
 	}
-	if err := json.NewDecoder(stepsResp.Body).Decode(&stepsPayload); err != nil {
-		t.Fatalf("decode steps response: %v", err)
-	}
+	decodeJSONResponse(t, stepsResp, &stepsPayload)
 
 	if len(stepsPayload.Steps) != 3 {
 		t.Fatalf("expected 3 steps, got %d", len(stepsPayload.Steps))
@@ -104,42 +76,24 @@ func TestExecutionRejectsUnknownMode(t *testing.T) {
 	handler := newAuthenticatedHandler(t)
 	workflowID := createExecutionWorkflow(t, handler, uploadDocumentForExecution(t, handler, "doc.txt", []byte("hello workflow execution")))
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", bytes.NewBufferString(`{"mode":"later"}`))
-	req.Header.Set("X-API-Key", exampleTenantAKey)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, req)
-	resp := recorder.Result()
+	resp := performRequest(handler, newAuthedJSONRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", exampleTenantAKey, `{"mode":"later"}`))
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", resp.StatusCode)
-	}
+	expectStatus(t, resp, http.StatusBadRequest)
 }
 
 func uploadDocumentForExecution(t *testing.T, handler http.Handler, filename string, payload []byte) string {
 	t.Helper()
 
-	body, contentType := multipartBody(t, "file", filename, payload)
-	req := httptest.NewRequest(http.MethodPost, "/v1/documents", body)
-	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("X-API-Key", exampleTenantAKey)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, req)
-	resp := recorder.Result()
+	resp := performRequest(handler, newAuthedMultipartRequest(t, "/v1/documents", exampleTenantAKey, "file", filename, payload))
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", resp.StatusCode)
-	}
+	expectStatus(t, resp, http.StatusCreated)
 
 	var envelope struct {
 		Document struct {
 			ID string `json:"id"`
 		} `json:"document"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		t.Fatalf("decode document upload response: %v", err)
-	}
+	decodeJSONResponse(t, resp, &envelope)
 
 	return envelope.Document.ID
 }
@@ -147,7 +101,7 @@ func uploadDocumentForExecution(t *testing.T, handler http.Handler, filename str
 func createExecutionWorkflow(t *testing.T, handler http.Handler, documentID string) string {
 	t.Helper()
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/workflows", bytes.NewBufferString(fmt.Sprintf(`{
+	resp := performRequest(handler, newAuthedJSONRequest(http.MethodPost, "/v1/workflows", exampleTenantAKey, fmt.Sprintf(`{
 		"name":"sync-flow",
 		"version":1,
 		"nodes":[
@@ -160,24 +114,15 @@ func createExecutionWorkflow(t *testing.T, handler http.Handler, documentID stri
 			{"from":"summarize","to":"audit"}
 		]
 	}`, documentID)))
-	req.Header.Set("X-API-Key", exampleTenantAKey)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, req)
-	resp := recorder.Result()
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", resp.StatusCode)
-	}
+	expectStatus(t, resp, http.StatusCreated)
 
 	var envelope struct {
 		Workflow struct {
 			ID string `json:"id"`
 		} `json:"workflow"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		t.Fatalf("decode workflow response: %v", err)
-	}
+	decodeJSONResponse(t, resp, &envelope)
 
 	return envelope.Workflow.ID
 }

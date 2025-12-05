@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -36,6 +37,15 @@ type DependencyConfig struct {
 
 type StorageConfig struct {
 	ObjectDir string
+	S3        S3StorageConfig
+}
+
+type S3StorageConfig struct {
+	Endpoint  string
+	AccessKey string
+	SecretKey string
+	Bucket    string
+	UseSSL    bool
 }
 
 type LimitsConfig struct {
@@ -101,6 +111,13 @@ func Load(defaultServiceName string) (Config, error) {
 		},
 		Storage: StorageConfig{
 			ObjectDir: stringEnv("OBJECT_STORAGE_DIR", filepath.Join(os.TempDir(), "workflow-objects")),
+			S3: S3StorageConfig{
+				Endpoint:  strings.TrimSpace(os.Getenv("MINIO_ENDPOINT")),
+				AccessKey: strings.TrimSpace(os.Getenv("MINIO_ACCESS_KEY")),
+				SecretKey: strings.TrimSpace(os.Getenv("MINIO_SECRET_KEY")),
+				Bucket:    strings.TrimSpace(os.Getenv("MINIO_BUCKET")),
+				UseSSL:    boolEnv("MINIO_USE_SSL", false),
+			},
 		},
 		Limits: LimitsConfig{
 			TenantExecuteLimit:  intEnv("TENANT_EXECUTE_LIMIT", 20),
@@ -158,6 +175,20 @@ func floatEnv(key string, fallback float64) float64 {
 	}
 
 	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+
+	return parsed
+}
+
+func boolEnv(key string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.ParseBool(value)
 	if err != nil {
 		return fallback
 	}

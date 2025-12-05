@@ -85,41 +85,46 @@ func NewHandler(logger *slog.Logger, healthService *health.Service, authenticato
 		executorService: executorService,
 	}
 	mux := http.NewServeMux()
+	protected := func(pattern string, handler http.HandlerFunc) {
+		mux.Handle(pattern, requireAPIKey(authenticator, handler))
+	}
 
 	mux.Handle("GET /health/live", http.HandlerFunc(srv.handleLive))
 	mux.Handle("GET /health/ready", http.HandlerFunc(srv.handleReady))
-	mux.Handle("GET /v1/tenants/me", requireAPIKey(authenticator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		identity, ok := currentIdentity(w, r)
-		if !ok {
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"tenant": map[string]string{
-				"id":     identity.TenantID,
-				"name":   identity.TenantName,
-				"status": string(identity.TenantStatus),
-			},
-			"api_key": map[string]string{
-				"id":    identity.APIKeyID,
-				"label": identity.APIKeyLabel,
-			},
-		})
-	})))
-	mux.Handle("POST /v1/documents", requireAPIKey(authenticator, http.HandlerFunc(srv.handleUploadDocument)))
-	mux.Handle("GET /v1/documents/{documentID}", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetDocument)))
-	mux.Handle("GET /v1/documents/{documentID}/chunks", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetDocumentChunks)))
-	mux.Handle("POST /v1/workflows", requireAPIKey(authenticator, http.HandlerFunc(srv.handleCreateWorkflow)))
-	mux.Handle("GET /v1/workflows/{workflowID}", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetWorkflow)))
-	mux.Handle("POST /v1/workflows/{workflowID}/validate", requireAPIKey(authenticator, http.HandlerFunc(srv.handleValidateWorkflow)))
-	mux.Handle("POST /v1/workflows/{workflowID}/execute", requireAPIKey(authenticator, http.HandlerFunc(srv.handleExecuteWorkflow)))
-	mux.Handle("GET /v1/workflow-runs", requireAPIKey(authenticator, http.HandlerFunc(srv.handleListRuns)))
-	mux.Handle("GET /v1/workflow-runs/{runID}", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetRun)))
-	mux.Handle("GET /v1/workflow-runs/{runID}/steps", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetRunSteps)))
-	mux.Handle("GET /v1/workflow-runs/{runID}/events", requireAPIKey(authenticator, http.HandlerFunc(srv.handleGetRunEvents)))
-	mux.Handle("POST /v1/workflow-runs/{runID}/resume", requireAPIKey(authenticator, http.HandlerFunc(srv.handleResumeRun)))
+	protected("GET /v1/tenants/me", srv.handleTenantSelf)
+	protected("POST /v1/documents", srv.handleUploadDocument)
+	protected("GET /v1/documents/{documentID}", srv.handleGetDocument)
+	protected("GET /v1/documents/{documentID}/chunks", srv.handleGetDocumentChunks)
+	protected("POST /v1/workflows", srv.handleCreateWorkflow)
+	protected("GET /v1/workflows/{workflowID}", srv.handleGetWorkflow)
+	protected("POST /v1/workflows/{workflowID}/validate", srv.handleValidateWorkflow)
+	protected("POST /v1/workflows/{workflowID}/execute", srv.handleExecuteWorkflow)
+	protected("GET /v1/workflow-runs", srv.handleListRuns)
+	protected("GET /v1/workflow-runs/{runID}", srv.handleGetRun)
+	protected("GET /v1/workflow-runs/{runID}/steps", srv.handleGetRunSteps)
+	protected("GET /v1/workflow-runs/{runID}/events", srv.handleGetRunEvents)
+	protected("POST /v1/workflow-runs/{runID}/resume", srv.handleResumeRun)
 
 	return requestLogger(logger, mux)
+}
+
+func (s server) handleTenantSelf(w http.ResponseWriter, r *http.Request) {
+	identity, ok := currentIdentity(w, r)
+	if !ok {
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tenant": map[string]string{
+			"id":     identity.TenantID,
+			"name":   identity.TenantName,
+			"status": string(identity.TenantStatus),
+		},
+		"api_key": map[string]string{
+			"id":    identity.APIKeyID,
+			"label": identity.APIKeyLabel,
+		},
+	})
 }
 
 func (s server) handleLive(w http.ResponseWriter, _ *http.Request) {
@@ -515,64 +520,102 @@ func serviceContext[T any](w http.ResponseWriter, r *http.Request, service *T, n
 	return identity, service, true
 }
 
-func writeDocumentError(w http.ResponseWriter, err error, fallback string) {
+type errorRule struct {
+	status    int
+	message   string
+	useErr    bool
+	sentinels []error
+}
+
+func writeMappedError(w http.ResponseWriter, err error, fallback string, rules ...errorRule) {
 	statusCode := http.StatusInternalServerError
 	message := fallback
 
-	switch {
-	case errors.Is(err, documents.ErrInvalidFilename), errors.Is(err, documents.ErrMissingContent), errors.Is(err, documents.ErrUnsupportedContentType):
-		statusCode = http.StatusBadRequest
-		message = err.Error()
-	case errors.Is(err, documents.ErrNotFound):
-		statusCode = http.StatusNotFound
-		message = "document not found"
+	for _, rule := range rules {
+		if !matchesAny(err, rule.sentinels...) {
+			continue
+		}
+
+		statusCode = rule.status
+		if rule.useErr {
+			message = err.Error()
+		} else if rule.message != "" {
+			message = rule.message
+		}
+		break
 	}
 
 	writeError(w, statusCode, message)
+}
+
+func matchesAny(err error, sentinels ...error) bool {
+	for _, sentinel := range sentinels {
+		if errors.Is(err, sentinel) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func writeDocumentError(w http.ResponseWriter, err error, fallback string) {
+	writeMappedError(w, err, fallback,
+		errorRule{
+			status:    http.StatusBadRequest,
+			useErr:    true,
+			sentinels: []error{documents.ErrInvalidFilename, documents.ErrMissingContent, documents.ErrUnsupportedContentType},
+		},
+		errorRule{
+			status:    http.StatusNotFound,
+			message:   "document not found",
+			sentinels: []error{documents.ErrNotFound},
+		},
+	)
 }
 
 func writeWorkflowError(w http.ResponseWriter, err error, fallback string) {
-	statusCode := http.StatusInternalServerError
-	message := fallback
-
-	switch {
-	case errors.Is(err, workflow.ErrNotFound):
-		statusCode = http.StatusNotFound
-		message = "workflow not found"
-	case errors.Is(err, workflow.ErrInvalidTenant), errors.Is(err, workflow.ErrInvalidDefinition):
-		statusCode = http.StatusBadRequest
-		message = err.Error()
-	}
-
-	writeError(w, statusCode, message)
+	writeMappedError(w, err, fallback,
+		errorRule{
+			status:    http.StatusNotFound,
+			message:   "workflow not found",
+			sentinels: []error{workflow.ErrNotFound},
+		},
+		errorRule{
+			status:    http.StatusBadRequest,
+			useErr:    true,
+			sentinels: []error{workflow.ErrInvalidTenant, workflow.ErrInvalidDefinition},
+		},
+	)
 }
 
 func writeExecutionError(w http.ResponseWriter, err error, fallback string) {
-	statusCode := http.StatusInternalServerError
-	message := fallback
-
-	switch {
-	case errors.Is(err, workflow.ErrNotFound):
-		statusCode = http.StatusNotFound
-		message = "workflow not found"
-	case errors.Is(err, executor.ErrNotFound):
-		statusCode = http.StatusNotFound
-		message = "workflow run not found"
-	case errors.Is(err, executor.ErrRunNotAwaitingReview):
-		statusCode = http.StatusConflict
-		message = err.Error()
-	case errors.Is(err, tenant.ErrIdempotencyConflict):
-		statusCode = http.StatusConflict
-		message = err.Error()
-	case errors.Is(err, tenant.ErrRateLimited):
-		statusCode = http.StatusTooManyRequests
-		message = err.Error()
-	case errors.Is(err, executor.ErrInvalidTenant), errors.Is(err, executor.ErrAsyncDisabled):
-		statusCode = http.StatusBadRequest
-		message = err.Error()
-	}
-
-	writeError(w, statusCode, message)
+	writeMappedError(w, err, fallback,
+		errorRule{
+			status:    http.StatusNotFound,
+			message:   "workflow not found",
+			sentinels: []error{workflow.ErrNotFound},
+		},
+		errorRule{
+			status:    http.StatusNotFound,
+			message:   "workflow run not found",
+			sentinels: []error{executor.ErrNotFound},
+		},
+		errorRule{
+			status:    http.StatusConflict,
+			useErr:    true,
+			sentinels: []error{executor.ErrRunNotAwaitingReview, tenant.ErrIdempotencyConflict},
+		},
+		errorRule{
+			status:    http.StatusTooManyRequests,
+			useErr:    true,
+			sentinels: []error{tenant.ErrRateLimited},
+		},
+		errorRule{
+			status:    http.StatusBadRequest,
+			useErr:    true,
+			sentinels: []error{executor.ErrInvalidTenant, executor.ErrAsyncDisabled},
+		},
+	)
 }
 
 func executionFingerprint(mode, workflowID string, input map[string]any) (string, error) {

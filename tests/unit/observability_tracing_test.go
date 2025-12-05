@@ -1,7 +1,6 @@
 package unit_test
 
 import (
-	"bytes"
 	"context"
 	"testing"
 
@@ -10,7 +9,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	"workflow/internal/documents"
 	"workflow/internal/executor"
 	"workflow/internal/workflow"
 )
@@ -25,21 +23,9 @@ func TestExecuteSyncEmitsTracingSpans(t *testing.T) {
 		_ = provider.Shutdown(context.Background())
 	})
 
-	documentService := documents.NewService(
-		documents.NewMemoryRepository(),
-		documents.NewLocalObjectStore(t.TempDir()),
-	)
-	document, err := documentService.Create(context.Background(), "tenant-a", documents.CreateParams{
-		Filename:    "tracing.txt",
-		ContentType: "text/plain",
-		Content:     bytes.NewBufferString("distributed tracing for workflow execution"),
-	})
-	if err != nil {
-		t.Fatalf("create document: %v", err)
-	}
-
-	workflowService := workflow.NewService(workflow.NewMemoryRepository())
-	createdWorkflow, _, err := workflowService.Create(context.Background(), "tenant-a", workflow.Definition{
+	fixture := newExecutorFixture(t)
+	document := fixture.createDocument(t, "tenant-a", "tracing.txt", "distributed tracing for workflow execution")
+	createdWorkflow := fixture.createWorkflow(t, "tenant-a", workflow.Definition{
 		Name:    "trace-flow",
 		Version: 1,
 		Nodes: []workflow.Node{
@@ -50,18 +36,8 @@ func TestExecuteSyncEmitsTracingSpans(t *testing.T) {
 			{From: "retrieve", To: "summarize"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
 
-	executorService := executor.NewService(
-		executor.NewMemoryRepository(),
-		workflowService,
-		documentService,
-		executor.NewMockLLMProvider(),
-	)
-
-	run, err := executorService.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"query": "tracing"})
+	run, err := fixture.executor.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"query": "tracing"})
 	if err != nil {
 		t.Fatalf("execute sync workflow: %v", err)
 	}

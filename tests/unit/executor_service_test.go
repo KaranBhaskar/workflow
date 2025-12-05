@@ -1,7 +1,6 @@
 package unit_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -9,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"workflow/internal/documents"
 	"workflow/internal/executor"
 	"workflow/internal/workflow"
 )
@@ -23,21 +21,9 @@ func (f stubHTTPClient) Do(req *http.Request) (*http.Response, error) {
 func TestExecuteSyncCompletesLinearWorkflow(t *testing.T) {
 	t.Parallel()
 
-	documentService := documents.NewService(
-		documents.NewMemoryRepository(),
-		documents.NewLocalObjectStore(t.TempDir()),
-	)
-	document, err := documentService.Create(context.Background(), "tenant-a", documents.CreateParams{
-		Filename:    "architecture.txt",
-		ContentType: "text/plain",
-		Content:     bytes.NewBufferString("backend orchestration platform architecture reliability"),
-	})
-	if err != nil {
-		t.Fatalf("create document: %v", err)
-	}
-
-	workflowService := workflow.NewService(workflow.NewMemoryRepository())
-	createdWorkflow, _, err := workflowService.Create(context.Background(), "tenant-a", workflow.Definition{
+	fixture := newExecutorFixture(t)
+	document := fixture.createDocument(t, "tenant-a", "architecture.txt", "backend orchestration platform architecture reliability")
+	createdWorkflow := fixture.createWorkflow(t, "tenant-a", workflow.Definition{
 		Name:    "sync-flow",
 		Version: 1,
 		Nodes: []workflow.Node{
@@ -50,18 +36,8 @@ func TestExecuteSyncCompletesLinearWorkflow(t *testing.T) {
 			{From: "summarize", To: "audit"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
 
-	executorService := executor.NewService(
-		executor.NewMemoryRepository(),
-		workflowService,
-		documentService,
-		executor.NewMockLLMProvider(),
-	)
-
-	run, err := executorService.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"query": "backend"})
+	run, err := fixture.executor.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"query": "backend"})
 	if err != nil {
 		t.Fatalf("execute workflow: %v", err)
 	}
@@ -69,7 +45,7 @@ func TestExecuteSyncCompletesLinearWorkflow(t *testing.T) {
 		t.Fatalf("expected completed run, got %q", run.Status)
 	}
 
-	steps, err := executorService.ListSteps(context.Background(), "tenant-a", run.ID)
+	steps, err := fixture.executor.ListSteps(context.Background(), "tenant-a", run.ID)
 	if err != nil {
 		t.Fatalf("list steps: %v", err)
 	}
@@ -84,12 +60,8 @@ func TestExecuteSyncCompletesLinearWorkflow(t *testing.T) {
 func TestExecuteSyncPausesApprovalWorkflow(t *testing.T) {
 	t.Parallel()
 
-	documentService := documents.NewService(
-		documents.NewMemoryRepository(),
-		documents.NewLocalObjectStore(t.TempDir()),
-	)
-	workflowService := workflow.NewService(workflow.NewMemoryRepository())
-	createdWorkflow, _, err := workflowService.Create(context.Background(), "tenant-a", workflow.Definition{
+	fixture := newExecutorFixture(t)
+	createdWorkflow := fixture.createWorkflow(t, "tenant-a", workflow.Definition{
 		Name:    "approval-flow",
 		Version: 1,
 		Nodes: []workflow.Node{
@@ -100,18 +72,8 @@ func TestExecuteSyncPausesApprovalWorkflow(t *testing.T) {
 			{From: "review", To: "audit"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
 
-	executorService := executor.NewService(
-		executor.NewMemoryRepository(),
-		workflowService,
-		documentService,
-		executor.NewMockLLMProvider(),
-	)
-
-	run, err := executorService.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, nil)
+	run, err := fixture.executor.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, nil)
 	if err != nil {
 		t.Fatalf("execute workflow: %v", err)
 	}
@@ -119,7 +81,7 @@ func TestExecuteSyncPausesApprovalWorkflow(t *testing.T) {
 		t.Fatalf("expected waiting approval run, got %q", run.Status)
 	}
 
-	steps, err := executorService.ListSteps(context.Background(), "tenant-a", run.ID)
+	steps, err := fixture.executor.ListSteps(context.Background(), "tenant-a", run.ID)
 	if err != nil {
 		t.Fatalf("list steps: %v", err)
 	}
@@ -130,7 +92,7 @@ func TestExecuteSyncPausesApprovalWorkflow(t *testing.T) {
 		t.Fatalf("expected waiting approval step, got %q", steps[0].Status)
 	}
 
-	resumedRun, err := executorService.ResumeApproval(context.Background(), "tenant-a", run.ID, true, "approved", nil)
+	resumedRun, err := fixture.executor.ResumeApproval(context.Background(), "tenant-a", run.ID, true, "approved", nil)
 	if err != nil {
 		t.Fatalf("resume approval: %v", err)
 	}
@@ -138,7 +100,7 @@ func TestExecuteSyncPausesApprovalWorkflow(t *testing.T) {
 		t.Fatalf("expected completed resumed run, got %q", resumedRun.Status)
 	}
 
-	steps, err = executorService.ListSteps(context.Background(), "tenant-a", run.ID)
+	steps, err = fixture.executor.ListSteps(context.Background(), "tenant-a", run.ID)
 	if err != nil {
 		t.Fatalf("list steps after resume: %v", err)
 	}
@@ -156,12 +118,8 @@ func TestExecuteSyncPausesApprovalWorkflow(t *testing.T) {
 func TestExecuteSyncRoutesConditionBranches(t *testing.T) {
 	t.Parallel()
 
-	documentService := documents.NewService(
-		documents.NewMemoryRepository(),
-		documents.NewLocalObjectStore(t.TempDir()),
-	)
-	workflowService := workflow.NewService(workflow.NewMemoryRepository())
-	createdWorkflow, _, err := workflowService.Create(context.Background(), "tenant-a", workflow.Definition{
+	fixture := newExecutorFixture(t)
+	createdWorkflow := fixture.createWorkflow(t, "tenant-a", workflow.Definition{
 		Name:    "route-flow",
 		Version: 1,
 		Nodes: []workflow.Node{
@@ -174,23 +132,13 @@ func TestExecuteSyncRoutesConditionBranches(t *testing.T) {
 			{From: "route", To: "low", Condition: "false"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
 
-	executorService := executor.NewService(
-		executor.NewMemoryRepository(),
-		workflowService,
-		documentService,
-		executor.NewMockLLMProvider(),
-	)
-
-	run, err := executorService.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"severity": "high"})
+	run, err := fixture.executor.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"severity": "high"})
 	if err != nil {
 		t.Fatalf("execute workflow: %v", err)
 	}
 
-	steps, err := executorService.ListSteps(context.Background(), "tenant-a", run.ID)
+	steps, err := fixture.executor.ListSteps(context.Background(), "tenant-a", run.ID)
 	if err != nil {
 		t.Fatalf("list steps: %v", err)
 	}
@@ -228,30 +176,16 @@ func TestExecuteSyncCallsHTTPToolNode(t *testing.T) {
 		}, nil
 	})
 
-	documentService := documents.NewService(
-		documents.NewMemoryRepository(),
-		documents.NewLocalObjectStore(t.TempDir()),
-	)
-	workflowService := workflow.NewService(workflow.NewMemoryRepository())
-	createdWorkflow, _, err := workflowService.Create(context.Background(), "tenant-a", workflow.Definition{
+	fixture := newExecutorFixture(t, withHTTPClient(httpClient))
+	createdWorkflow := fixture.createWorkflow(t, "tenant-a", workflow.Definition{
 		Name:    "tool-flow",
 		Version: 1,
 		Nodes: []workflow.Node{
 			{ID: "notify", Type: "http_tool", Config: map[string]any{"url": "https://api.example.com/notify", "method": "POST", "input_key": "ticket"}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
 
-	executorService := executor.NewService(
-		executor.NewMemoryRepository(),
-		workflowService,
-		documentService,
-		executor.NewMockLLMProvider(),
-	).WithHTTPClient(httpClient)
-
-	run, err := executorService.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"ticket": "INC-42"})
+	run, err := fixture.executor.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, map[string]any{"ticket": "INC-42"})
 	if err != nil {
 		t.Fatalf("execute workflow: %v", err)
 	}
@@ -259,7 +193,7 @@ func TestExecuteSyncCallsHTTPToolNode(t *testing.T) {
 		t.Fatalf("expected completed run, got %q", run.Status)
 	}
 
-	steps, err := executorService.ListSteps(context.Background(), "tenant-a", run.ID)
+	steps, err := fixture.executor.ListSteps(context.Background(), "tenant-a", run.ID)
 	if err != nil {
 		t.Fatalf("list steps: %v", err)
 	}
@@ -287,10 +221,6 @@ func TestExecuteSyncCallsHTTPToolNode(t *testing.T) {
 func TestExecuteSyncRejectsUnsafeHTTPToolTargetAtRuntime(t *testing.T) {
 	t.Parallel()
 
-	documentService := documents.NewService(
-		documents.NewMemoryRepository(),
-		documents.NewLocalObjectStore(t.TempDir()),
-	)
 	repository := workflow.NewMemoryRepository()
 	unsafeWorkflow := workflow.Workflow{
 		ID:               "wf-unsafe",
@@ -312,17 +242,15 @@ func TestExecuteSyncRejectsUnsafeHTTPToolTargetAtRuntime(t *testing.T) {
 	}
 
 	httpClientCalled := false
-	executorService := executor.NewService(
-		executor.NewMemoryRepository(),
-		workflow.NewService(repository),
-		documentService,
-		executor.NewMockLLMProvider(),
-	).WithHTTPClient(stubHTTPClient(func(req *http.Request) (*http.Response, error) {
-		httpClientCalled = true
-		return nil, nil
-	}))
+	fixture := newExecutorFixture(t,
+		withWorkflowRepository(repository),
+		withHTTPClient(stubHTTPClient(func(req *http.Request) (*http.Response, error) {
+			httpClientCalled = true
+			return nil, nil
+		})),
+	)
 
-	run, err := executorService.ExecuteSync(context.Background(), "tenant-a", unsafeWorkflow.ID, nil)
+	run, err := fixture.executor.ExecuteSync(context.Background(), "tenant-a", unsafeWorkflow.ID, nil)
 	if err != nil {
 		t.Fatalf("execute workflow: %v", err)
 	}
@@ -340,12 +268,8 @@ func TestExecuteSyncRejectsUnsafeHTTPToolTargetAtRuntime(t *testing.T) {
 func TestResumeApprovalRejectsRun(t *testing.T) {
 	t.Parallel()
 
-	documentService := documents.NewService(
-		documents.NewMemoryRepository(),
-		documents.NewLocalObjectStore(t.TempDir()),
-	)
-	workflowService := workflow.NewService(workflow.NewMemoryRepository())
-	createdWorkflow, _, err := workflowService.Create(context.Background(), "tenant-a", workflow.Definition{
+	fixture := newExecutorFixture(t)
+	createdWorkflow := fixture.createWorkflow(t, "tenant-a", workflow.Definition{
 		Name:    "reject-flow",
 		Version: 1,
 		Nodes: []workflow.Node{
@@ -356,23 +280,13 @@ func TestResumeApprovalRejectsRun(t *testing.T) {
 			{From: "review", To: "audit"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
 
-	executorService := executor.NewService(
-		executor.NewMemoryRepository(),
-		workflowService,
-		documentService,
-		executor.NewMockLLMProvider(),
-	)
-
-	run, err := executorService.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, nil)
+	run, err := fixture.executor.ExecuteSync(context.Background(), "tenant-a", createdWorkflow.ID, nil)
 	if err != nil {
 		t.Fatalf("execute workflow: %v", err)
 	}
 
-	rejectedRun, err := executorService.ResumeApproval(context.Background(), "tenant-a", run.ID, false, "needs changes", nil)
+	rejectedRun, err := fixture.executor.ResumeApproval(context.Background(), "tenant-a", run.ID, false, "needs changes", nil)
 	if err != nil {
 		t.Fatalf("resume rejection: %v", err)
 	}
@@ -380,7 +294,7 @@ func TestResumeApprovalRejectsRun(t *testing.T) {
 		t.Fatalf("expected failed run after rejection, got %q", rejectedRun.Status)
 	}
 
-	steps, err := executorService.ListSteps(context.Background(), "tenant-a", run.ID)
+	steps, err := fixture.executor.ListSteps(context.Background(), "tenant-a", run.ID)
 	if err != nil {
 		t.Fatalf("list steps: %v", err)
 	}

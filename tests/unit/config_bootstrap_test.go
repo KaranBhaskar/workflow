@@ -47,3 +47,32 @@ func TestLoadParsesObservabilityConfig(t *testing.T) {
 		t.Fatalf("expected sample ratio 0.25, got %v", cfg.Observability.SampleRatio)
 	}
 }
+
+func TestLoadParsesS3StorageConfig(t *testing.T) {
+	t.Setenv("MINIO_ENDPOINT", "minio:9000")
+	t.Setenv("MINIO_ACCESS_KEY", "example-minio-user")
+	t.Setenv("MINIO_SECRET_KEY", "example-minio-password")
+	t.Setenv("MINIO_BUCKET", "workflow")
+	t.Setenv("MINIO_USE_SSL", "true")
+
+	cfg, err := config.Load("workflow-api")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.Storage.S3.Endpoint != "minio:9000" {
+		t.Fatalf("expected minio endpoint, got %q", cfg.Storage.S3.Endpoint)
+	}
+	if cfg.Storage.S3.AccessKey != "example-minio-user" {
+		t.Fatalf("expected minio access key, got %q", cfg.Storage.S3.AccessKey)
+	}
+	if cfg.Storage.S3.SecretKey != "example-minio-password" {
+		t.Fatalf("expected minio secret key, got %q", cfg.Storage.S3.SecretKey)
+	}
+	if cfg.Storage.S3.Bucket != "workflow" {
+		t.Fatalf("expected workflow bucket, got %q", cfg.Storage.S3.Bucket)
+	}
+	if !cfg.Storage.S3.UseSSL {
+		t.Fatal("expected minio ssl flag to be true")
+	}
+}

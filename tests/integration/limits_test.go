@@ -1,11 +1,8 @@
 package integration_test
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -17,44 +14,30 @@ func TestWorkflowExecuteReplaysIdempotencyKey(t *testing.T) {
 	documentID := uploadDocumentForExecution(t, handler, "idempotent.txt", []byte("workflow idempotency backend test"))
 	workflowID := createExecutionWorkflow(t, handler, documentID)
 
-	firstReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", bytes.NewBufferString(`{
+	firstReq := newAuthedJSONRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", exampleTenantAKey, `{
 		"mode":"sync",
 		"input":{"query":"backend"}
-	}`))
-	firstReq.Header.Set("X-API-Key", exampleTenantAKey)
+	}`)
 	firstReq.Header.Set("Idempotency-Key", "idem-sync-1")
-	firstRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(firstRecorder, firstReq)
-	firstResp := firstRecorder.Result()
+	firstResp := performRequest(handler, firstReq)
 	defer firstResp.Body.Close()
-
-	if firstResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", firstResp.StatusCode)
-	}
+	expectStatus(t, firstResp, http.StatusOK)
 
 	var firstPayload struct {
 		Run struct {
 			ID string `json:"id"`
 		} `json:"run"`
 	}
-	if err := json.NewDecoder(firstResp.Body).Decode(&firstPayload); err != nil {
-		t.Fatalf("decode first run: %v", err)
-	}
+	decodeJSONResponse(t, firstResp, &firstPayload)
 
-	secondReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", bytes.NewBufferString(`{
+	secondReq := newAuthedJSONRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", exampleTenantAKey, `{
 		"mode":"sync",
 		"input":{"query":"backend"}
-	}`))
-	secondReq.Header.Set("X-API-Key", exampleTenantAKey)
+	}`)
 	secondReq.Header.Set("Idempotency-Key", "idem-sync-1")
-	secondRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(secondRecorder, secondReq)
-	secondResp := secondRecorder.Result()
+	secondResp := performRequest(handler, secondReq)
 	defer secondResp.Body.Close()
-
-	if secondResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", secondResp.StatusCode)
-	}
+	expectStatus(t, secondResp, http.StatusOK)
 	if secondResp.Header.Get("X-Idempotent-Replay") != "true" {
 		t.Fatal("expected replay header to be set")
 	}
@@ -64,9 +47,7 @@ func TestWorkflowExecuteReplaysIdempotencyKey(t *testing.T) {
 			ID string `json:"id"`
 		} `json:"run"`
 	}
-	if err := json.NewDecoder(secondResp.Body).Decode(&secondPayload); err != nil {
-		t.Fatalf("decode second run: %v", err)
-	}
+	decodeJSONResponse(t, secondResp, &secondPayload)
 	if secondPayload.Run.ID != firstPayload.Run.ID {
 		t.Fatalf("expected same run id on replay, got %q and %q", firstPayload.Run.ID, secondPayload.Run.ID)
 	}
@@ -79,35 +60,23 @@ func TestWorkflowExecuteRejectsIdempotencyMismatch(t *testing.T) {
 	documentID := uploadDocumentForExecution(t, handler, "idempotent-mismatch.txt", []byte("workflow idempotency mismatch"))
 	workflowID := createExecutionWorkflow(t, handler, documentID)
 
-	firstReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", bytes.NewBufferString(`{
+	firstReq := newAuthedJSONRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", exampleTenantAKey, `{
 		"mode":"sync",
 		"input":{"query":"first"}
-	}`))
-	firstReq.Header.Set("X-API-Key", exampleTenantAKey)
+	}`)
 	firstReq.Header.Set("Idempotency-Key", "idem-sync-2")
-	firstRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(firstRecorder, firstReq)
-	firstResp := firstRecorder.Result()
+	firstResp := performRequest(handler, firstReq)
 	defer firstResp.Body.Close()
+	expectStatus(t, firstResp, http.StatusOK)
 
-	if firstResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", firstResp.StatusCode)
-	}
-
-	secondReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", bytes.NewBufferString(`{
+	secondReq := newAuthedJSONRequest(http.MethodPost, "/v1/workflows/"+workflowID+"/execute", exampleTenantAKey, `{
 		"mode":"sync",
 		"input":{"query":"second"}
-	}`))
-	secondReq.Header.Set("X-API-Key", exampleTenantAKey)
+	}`)
 	secondReq.Header.Set("Idempotency-Key", "idem-sync-2")
-	secondRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(secondRecorder, secondReq)
-	secondResp := secondRecorder.Result()
+	secondResp := performRequest(handler, secondReq)
 	defer secondResp.Body.Close()
-
-	if secondResp.StatusCode != http.StatusConflict {
-		t.Fatalf("expected 409, got %d", secondResp.StatusCode)
-	}
+	expectStatus(t, secondResp, http.StatusConflict)
 }
 
 func TestWorkflowExecuteRateLimitsPerTenant(t *testing.T) {
@@ -120,71 +89,41 @@ func TestWorkflowExecuteRateLimitsPerTenant(t *testing.T) {
 	tenantAWorkflow := createSingleNodeWorkflow(t, app.Handler, exampleTenantAKey, "tenant-a-flow")
 	tenantBWorkflow := createSingleNodeWorkflow(t, app.Handler, exampleTenantBKey, "tenant-b-flow")
 
-	firstReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+tenantAWorkflow+"/execute", bytes.NewBufferString(`{"mode":"sync"}`))
-	firstReq.Header.Set("X-API-Key", exampleTenantAKey)
-	firstRecorder := httptest.NewRecorder()
-	app.Handler.ServeHTTP(firstRecorder, firstReq)
-	firstResp := firstRecorder.Result()
+	firstResp := performRequest(app.Handler, newAuthedJSONRequest(http.MethodPost, "/v1/workflows/"+tenantAWorkflow+"/execute", exampleTenantAKey, `{"mode":"sync"}`))
 	defer firstResp.Body.Close()
-
-	if firstResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", firstResp.StatusCode)
-	}
+	expectStatus(t, firstResp, http.StatusOK)
 	if firstResp.Header.Get("X-RateLimit-Limit") != "1" {
 		t.Fatalf("expected limit header 1, got %q", firstResp.Header.Get("X-RateLimit-Limit"))
 	}
 
-	secondReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+tenantAWorkflow+"/execute", bytes.NewBufferString(`{"mode":"sync"}`))
-	secondReq.Header.Set("X-API-Key", exampleTenantAKey)
-	secondRecorder := httptest.NewRecorder()
-	app.Handler.ServeHTTP(secondRecorder, secondReq)
-	secondResp := secondRecorder.Result()
+	secondResp := performRequest(app.Handler, newAuthedJSONRequest(http.MethodPost, "/v1/workflows/"+tenantAWorkflow+"/execute", exampleTenantAKey, `{"mode":"sync"}`))
 	defer secondResp.Body.Close()
+	expectStatus(t, secondResp, http.StatusTooManyRequests)
 
-	if secondResp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("expected 429, got %d", secondResp.StatusCode)
-	}
-
-	tenantBReq := httptest.NewRequest(http.MethodPost, "/v1/workflows/"+tenantBWorkflow+"/execute", bytes.NewBufferString(`{"mode":"sync"}`))
-	tenantBReq.Header.Set("X-API-Key", exampleTenantBKey)
-	tenantBRecorder := httptest.NewRecorder()
-	app.Handler.ServeHTTP(tenantBRecorder, tenantBReq)
-	tenantBResp := tenantBRecorder.Result()
+	tenantBResp := performRequest(app.Handler, newAuthedJSONRequest(http.MethodPost, "/v1/workflows/"+tenantBWorkflow+"/execute", exampleTenantBKey, `{"mode":"sync"}`))
 	defer tenantBResp.Body.Close()
-
-	if tenantBResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected tenant b to remain unaffected, got %d", tenantBResp.StatusCode)
-	}
+	expectStatus(t, tenantBResp, http.StatusOK)
 }
 
 func createSingleNodeWorkflow(t *testing.T, handler http.Handler, apiKey, name string) string {
 	t.Helper()
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/workflows", bytes.NewBufferString(fmt.Sprintf(`{
+	resp := performRequest(handler, newAuthedJSONRequest(http.MethodPost, "/v1/workflows", apiKey, fmt.Sprintf(`{
 		"name":"%s",
 		"version":1,
 		"nodes":[
 			{"id":"audit","type":"audit_log","config":{"message":"done"}}
 		]
 	}`, name)))
-	req.Header.Set("X-API-Key", apiKey)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, req)
-	resp := recorder.Result()
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", resp.StatusCode)
-	}
+	expectStatus(t, resp, http.StatusCreated)
 
 	var payload struct {
 		Workflow struct {
 			ID string `json:"id"`
 		} `json:"workflow"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode workflow response: %v", err)
-	}
+	decodeJSONResponse(t, resp, &payload)
 
 	return payload.Workflow.ID
 }
