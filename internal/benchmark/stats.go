@@ -123,7 +123,6 @@ func RenderMarkdown(result Result) string {
 	var builder strings.Builder
 
 	builder.WriteString("# Benchmark Results\n\n")
-	builder.WriteString(fmt.Sprintf("Generated: %s\n\n", result.GeneratedAt.Format(time.RFC3339)))
 	builder.WriteString("## Dataset\n\n")
 	builder.WriteString(fmt.Sprintf("- tenants: %d\n", result.Dataset.Tenants))
 	builder.WriteString(fmt.Sprintf("- documents: %d (%d per tenant)\n", result.Dataset.Documents, result.Dataset.DocumentsPerTenant))
